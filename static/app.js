@@ -1,35 +1,114 @@
+/* =========================================================
+   INDIAN F&O SCANNER
+   PROFESSIONAL DASHBOARD JAVASCRIPT
+   ========================================================= */
+
 "use strict";
 
-/*
- * Indian F&O Scanner
- * Frontend controller
- *
- * Connects to:
- *   /api/status
- *   /api/scanner
- *   /api/settings
- *   /api/reset
- */
 
-const state = {
-    scanner: [],
-    settings: {},
-    status: {},
-    filter: "ALL",
-    search: ""
+/* =========================================================
+   CONFIGURATION
+   ========================================================= */
+
+const API = {
+    status: "/api/status",
+    scanner: "/api/scanner",
+    settings: "/api/settings",
+    reset: "/api/reset"
 };
 
 
-// =====================================================
-// HELPERS
-// =====================================================
+/*
+   IMPORTANT
+   We deliberately DO NOT call /api/groww-test automatically.
+
+   Groww authentication has a rate limit.
+   The dashboard should only read the existing backend status.
+*/
+
+
+const POLL_INTERVAL = 10000;
+const SCANNER_INTERVAL = 15000;
+
+
+/* =========================================================
+   APPLICATION STATE
+   ========================================================= */
+
+const state = {
+    status: null,
+    scanner: [],
+    filteredScanner: [],
+
+    signalFilter: "ALL",
+    searchText: "",
+
+    settings: {},
+
+    statusTimer: null,
+    scannerTimer: null,
+
+    loadingStatus: false,
+    loadingScanner: false
+};
+
+
+/* =========================================================
+   DOM HELPERS
+   ========================================================= */
 
 function $(id) {
     return document.getElementById(id);
 }
 
 
-function safeNumber(value, fallback = 0) {
+function setText(id, value) {
+    const element = $(id);
+
+    if (!element) {
+        return;
+    }
+
+    element.textContent =
+        value === null ||
+        value === undefined ||
+        value === ""
+            ? "--"
+            : String(value);
+}
+
+
+function showElement(id) {
+    const element = $(id);
+
+    if (element) {
+        element.style.display = "";
+    }
+}
+
+
+function hideElement(id) {
+    const element = $(id);
+
+    if (element) {
+        element.style.display = "none";
+    }
+}
+
+
+/* =========================================================
+   NUMBER HELPERS
+   ========================================================= */
+
+function numberValue(value, fallback = 0) {
+    if (
+        value === null ||
+        value === undefined ||
+        value === ""
+    ) {
+        return fallback;
+    }
+
     const number = Number(value);
 
     return Number.isFinite(number)
@@ -39,7 +118,7 @@ function safeNumber(value, fallback = 0) {
 
 
 function formatNumber(value, decimals = 2) {
-    const number = Number(value);
+    const number = numberValue(value, NaN);
 
     if (!Number.isFinite(number)) {
         return "--";
@@ -52,8 +131,19 @@ function formatNumber(value, decimals = 2) {
 }
 
 
+function formatInteger(value) {
+    const number = numberValue(value, NaN);
+
+    if (!Number.isFinite(number)) {
+        return "--";
+    }
+
+    return Math.round(number).toLocaleString("en-IN");
+}
+
+
 function formatPrice(value) {
-    const number = Number(value);
+    const number = numberValue(value, NaN);
 
     if (!Number.isFinite(number)) {
         return "--";
@@ -70,39 +160,644 @@ function formatPrice(value) {
         return number.toFixed(2);
     }
 
-    if (Math.abs(number) >= 1) {
+    if (Math.abs(number) >= 10) {
         return number.toFixed(2);
     }
 
-    return number.toFixed(4);
+    return number.toFixed(2);
 }
 
 
-function escapeHtml(value) {
-    return String(value ?? "")
-        .replaceAll("&", "&amp;")
-        .replaceAll("<", "&lt;")
-        .replaceAll(">", "&gt;")
-        .replaceAll('"', "&quot;")
-        .replaceAll("'", "&#039;");
-}
+/* =========================================================
+   HTML SAFETY
+   ========================================================= */
 
-
-function normalizeDirection(value) {
-    const direction = String(value ?? "").toUpperCase();
+function escapeHTML(value) {
 
     if (
-        direction.includes("BUY") ||
-        direction === "LONG" ||
-        direction === "BULLISH"
+        value === null ||
+        value === undefined
+    ) {
+        return "";
+    }
+
+    return String(value)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#039;");
+}
+
+
+/* =========================================================
+   API REQUEST
+   ========================================================= */
+
+async function apiRequest(
+    url,
+    options = {}
+) {
+
+    const response = await fetch(
+        url,
+        {
+            cache: "no-store",
+            ...options,
+
+            headers: {
+                "Accept": "application/json",
+                ...(options.headers || {})
+            }
+        }
+    );
+
+    const text = await response.text();
+
+    let data = {};
+
+    try {
+        data = text
+            ? JSON.parse(text)
+            : {};
+    } catch (error) {
+
+        data = {
+            raw: text
+        };
+    }
+
+    if (!response.ok) {
+
+        const message =
+            data.message ||
+            data.error ||
+            data.detail ||
+            `HTTP ${response.status}`;
+
+        throw new Error(message);
+    }
+
+    return data;
+}
+
+
+/* =========================================================
+   CONNECTION STATUS
+   ========================================================= */
+
+function updateConnection(
+    connected,
+    error = false
+) {
+
+    const dot = $("connectionDot");
+    const text = $("connectionText");
+
+    if (!dot || !text) {
+        return;
+    }
+
+    dot.classList.remove(
+        "live",
+        "error"
+    );
+
+    if (error) {
+
+        dot.classList.add("error");
+
+        text.textContent =
+            "Connection Error";
+
+        return;
+    }
+
+    if (connected) {
+
+        dot.classList.add("live");
+
+        text.textContent =
+            "Connected";
+
+        return;
+    }
+
+    text.textContent =
+        "Connecting...";
+}
+
+
+/* =========================================================
+   STATUS ERROR
+   ========================================================= */
+
+function showError(message) {
+
+    const element = $("errorMessage");
+
+    if (!element) {
+        return;
+    }
+
+    if (!message) {
+
+        element.textContent = "";
+
+        element.style.display = "none";
+
+        return;
+    }
+
+    element.textContent =
+        String(message);
+
+    element.style.display =
+        "block";
+}
+
+
+/* =========================================================
+   STATUS UPDATE
+   ========================================================= */
+
+async function loadStatus() {
+
+    if (state.loadingStatus) {
+        return;
+    }
+
+    state.loadingStatus = true;
+
+    try {
+
+        const data =
+            await apiRequest(API.status);
+
+        state.status = data;
+
+        updateConnection(
+            true,
+            false
+        );
+
+        updateStatusUI(data);
+
+    } catch (error) {
+
+        console.error(
+            "Status error:",
+            error
+        );
+
+        updateConnection(
+            false,
+            true
+        );
+
+        setText(
+            "marketStatus",
+            "Connection Error"
+        );
+
+        showError(
+            error.message ||
+            "Unable to connect to scanner backend."
+        );
+
+    } finally {
+
+        state.loadingStatus = false;
+    }
+}
+
+
+/* =========================================================
+   STATUS UI
+   ========================================================= */
+
+function updateStatusUI(data) {
+
+    if (!data) {
+        return;
+    }
+
+
+    /* -----------------------------------------------------
+       F&O STOCK COUNT
+       ----------------------------------------------------- */
+
+    const fnoCount =
+        data.fno_stock_count ??
+        data.fnoStocks ??
+        data.fno_stocks ??
+        data.universe_count ??
+        0;
+
+    setText(
+        "fnoStocks",
+        formatInteger(fnoCount)
+    );
+
+
+    setText(
+        "universeStatus",
+        `${formatInteger(fnoCount)} stocks`
+    );
+
+
+    /* -----------------------------------------------------
+       LIVE PRICE COUNT
+       ----------------------------------------------------- */
+
+    const livePrices =
+        data.live_prices ??
+        data.livePrices ??
+        data.ltp_count ??
+        0;
+
+    setText(
+        "livePrices",
+        formatInteger(livePrices)
+    );
+
+
+    /* -----------------------------------------------------
+       MARKET STATUS
+       ----------------------------------------------------- */
+
+    let marketStatus =
+        data.market_status ??
+        data.marketStatus ??
+        data.status ??
+        "UNKNOWN";
+
+    marketStatus =
+        String(marketStatus);
+
+    setText(
+        "marketStatus",
+        marketStatus
+    );
+
+
+    /* -----------------------------------------------------
+       HISTORY
+       ----------------------------------------------------- */
+
+    const historyLoaded =
+        data.history_loaded ??
+        data.historyLoaded ??
+        0;
+
+    const historyFailed =
+        data.history_failed ??
+        data.historyFailed ??
+        0;
+
+    let historyText =
+        `${formatInteger(historyLoaded)} loaded`;
+
+    if (
+        numberValue(historyFailed) > 0
+    ) {
+
+        historyText +=
+            ` • ${formatInteger(historyFailed)} failed`;
+    }
+
+    setText(
+        "historyStatus",
+        historyText
+    );
+
+
+    /* -----------------------------------------------------
+       LAST UPDATE
+       ----------------------------------------------------- */
+
+    const lastUpdate =
+        data.last_history_update ??
+        data.lastHistoryUpdate ??
+        data.last_ltp_update ??
+        data.lastLtpUpdate ??
+        null;
+
+    setText(
+        "lastUpdate",
+        formatDateTime(lastUpdate)
+    );
+
+
+    /* -----------------------------------------------------
+       AUTHENTICATION ERROR
+       ----------------------------------------------------- */
+
+    const authenticated =
+        data.authenticated;
+
+    const lastError =
+        data.last_error ??
+        data.lastError ??
+        data.message ??
+        null;
+
+
+    if (
+        authenticated === false &&
+        lastError
+    ) {
+
+        showError(
+            String(lastError)
+        );
+
+    } else if (
+        marketStatus === "ERROR" &&
+        lastError
+    ) {
+
+        showError(
+            String(lastError)
+        );
+
+    } else {
+
+        showError(null);
+    }
+}
+
+
+/* =========================================================
+   DATE/TIME
+   ========================================================= */
+
+function formatDateTime(value) {
+
+    if (
+        !value ||
+        value === "--"
+    ) {
+        return "--";
+    }
+
+    try {
+
+        const date =
+            new Date(value);
+
+        if (
+            Number.isNaN(
+                date.getTime()
+            )
+        ) {
+            return String(value);
+        }
+
+        return date.toLocaleString(
+            "en-IN",
+            {
+                day: "2-digit",
+                month: "short",
+                hour: "2-digit",
+                minute: "2-digit",
+                second: "2-digit"
+            }
+        );
+
+    } catch (error) {
+
+        return String(value);
+    }
+}
+
+
+/* =========================================================
+   SCANNER DATA
+   ========================================================= */
+
+async function loadScanner() {
+
+    if (state.loadingScanner) {
+        return;
+    }
+
+    state.loadingScanner = true;
+
+    try {
+
+        const data =
+            await apiRequest(API.scanner);
+
+        const rows =
+            extractScannerRows(data);
+
+        state.scanner =
+            rows.map(
+                normalizeScannerRow
+            );
+
+        applyFilters();
+
+        updateSignalCounters();
+
+    } catch (error) {
+
+        console.error(
+            "Scanner error:",
+            error
+        );
+
+        /*
+           Don't overwrite the existing scanner
+           with an empty result when backend is
+           temporarily unavailable.
+        */
+
+    } finally {
+
+        state.loadingScanner = false;
+    }
+}
+
+
+/* =========================================================
+   EXTRACT SCANNER ROWS
+   ========================================================= */
+
+function extractScannerRows(data) {
+
+    if (Array.isArray(data)) {
+        return data;
+    }
+
+    if (!data) {
+        return [];
+    }
+
+    const possibleKeys = [
+        "results",
+        "scanner",
+        "data",
+        "rows",
+        "stocks",
+        "signals",
+        "items"
+    ];
+
+    for (
+        const key of possibleKeys
+    ) {
+
+        if (
+            Array.isArray(data[key])
+        ) {
+            return data[key];
+        }
+    }
+
+    return [];
+}
+
+
+/* =========================================================
+   NORMALIZE SCANNER ROW
+   ========================================================= */
+
+function normalizeScannerRow(row) {
+
+    if (!row) {
+        return {};
+    }
+
+    const signal =
+        row.signal ??
+        row.Signal ??
+        row.action ??
+        row.side ??
+        row.recommendation ??
+        "WAIT";
+
+    return {
+        symbol:
+            row.symbol ??
+            row.stock ??
+            row.ticker ??
+            row.name ??
+            "--",
+
+        ltp:
+            row.ltp ??
+            row.price ??
+            row.close ??
+            row.last_price ??
+            0,
+
+        change:
+            row.change ??
+            row.change_percent ??
+            row.change_pct ??
+            row.pct_change ??
+            0,
+
+        wave:
+            row.wave ??
+            row.wave_signal ??
+            row.waveSignal ??
+            "--",
+
+        tide:
+            row.tide ??
+            row.tide_signal ??
+            row.tideSignal ??
+            "--",
+
+        ema:
+            row.ema ??
+            row.ema_signal ??
+            row.emaSignal ??
+            "--",
+
+        rsi:
+            row.rsi ??
+            row.RSI ??
+            0,
+
+        macd:
+            row.macd ??
+            row.MACD ??
+            "--",
+
+        volume:
+            row.volume ??
+            row.volume_status ??
+            row.volume_signal ??
+            "--",
+
+        support:
+            row.support ??
+            row.support_level ??
+            row.supportLevel ??
+            0,
+
+        resistance:
+            row.resistance ??
+            row.resistance_level ??
+            row.resistanceLevel ??
+            0,
+
+        score:
+            row.score ??
+            row.total_score ??
+            row.totalScore ??
+            0,
+
+        signal:
+            normalizeSignal(signal),
+
+        sl:
+            row.sl ??
+            row.stop_loss ??
+            row.stopLoss ??
+            row.stoploss ??
+            0,
+
+        target:
+            row.target ??
+            row.take_profit ??
+            row.takeProfit ??
+            0,
+
+        rr:
+            row.rr ??
+            row.risk_reward ??
+            row.riskReward ??
+            0
+    };
+}
+
+
+/* =========================================================
+   SIGNAL NORMALIZATION
+   ========================================================= */
+
+function normalizeSignal(value) {
+
+    const signal =
+        String(value || "")
+            .trim()
+            .toUpperCase();
+
+    if (
+        signal.includes("BUY") ||
+        signal === "LONG"
     ) {
         return "BUY";
     }
 
     if (
-        direction.includes("SELL") ||
-        direction === "SHORT" ||
-        direction === "BEARISH"
+        signal.includes("SELL") ||
+        signal === "SHORT"
     ) {
         return "SELL";
     }
@@ -111,14 +806,242 @@ function normalizeDirection(value) {
 }
 
 
-function signalClass(signal) {
-    const value = normalizeDirection(signal);
+/* =========================================================
+   FILTERS
+   ========================================================= */
 
-    if (value === "BUY") {
+function applyFilters() {
+
+    const filter =
+        state.signalFilter;
+
+    const search =
+        state.searchText
+            .trim()
+            .toUpperCase();
+
+
+    state.filteredScanner =
+        state.scanner.filter(
+            row => {
+
+                const signalMatch =
+                    filter === "ALL" ||
+                    row.signal === filter;
+
+                const symbol =
+                    String(
+                        row.symbol || ""
+                    ).toUpperCase();
+
+                const searchMatch =
+                    !search ||
+                    symbol.includes(search);
+
+                return (
+                    signalMatch &&
+                    searchMatch
+                );
+            }
+        );
+
+
+    renderScanner();
+}
+
+
+/* =========================================================
+   SCANNER TABLE
+   ========================================================= */
+
+function renderScanner() {
+
+    const body =
+        $("scannerBody");
+
+    if (!body) {
+        return;
+    }
+
+
+    if (
+        state.filteredScanner.length === 0
+    ) {
+
+        body.innerHTML = `
+            <tr>
+                <td
+                    colspan="17"
+                    class="empty-state"
+                >
+                    <div class="empty-icon">
+                        📊
+                    </div>
+
+                    <div>
+                        ${
+                            state.scanner.length === 0
+                                ? "Waiting for scanner data..."
+                                : "No stocks match the selected filter."
+                        }
+                    </div>
+                </td>
+            </tr>
+        `;
+
+        return;
+    }
+
+
+    body.innerHTML =
+        state.filteredScanner
+            .map(
+                (row, index) =>
+                    createScannerRow(
+                        row,
+                        index + 1
+                    )
+            )
+            .join("");
+}
+
+
+/* =========================================================
+   TABLE ROW
+   ========================================================= */
+
+function createScannerRow(
+    row,
+    index
+) {
+
+    const signalClass =
+        getSignalClass(
+            row.signal
+        );
+
+
+    const change =
+        numberValue(
+            row.change,
+            NaN
+        );
+
+
+    const changeClass =
+        Number.isFinite(change)
+            ? (
+                change > 0
+                    ? "positive"
+                    : change < 0
+                        ? "negative"
+                        : ""
+            )
+            : "";
+
+
+    return `
+        <tr>
+
+            <td>
+                ${index}
+            </td>
+
+            <td>
+                <span class="symbol">
+                    ${escapeHTML(row.symbol)}
+                </span>
+            </td>
+
+            <td>
+                ${formatPrice(row.ltp)}
+            </td>
+
+            <td class="${changeClass}">
+                ${
+                    Number.isFinite(change)
+                        ? `${change > 0 ? "+" : ""}${formatNumber(change, 2)}%`
+                        : "--"
+                }
+            </td>
+
+            <td>
+                ${signalText(row.wave)}
+            </td>
+
+            <td>
+                ${signalText(row.tide)}
+            </td>
+
+            <td>
+                ${signalText(row.ema)}
+            </td>
+
+            <td>
+                ${formatNumber(row.rsi, 1)}
+            </td>
+
+            <td>
+                ${formatIndicator(row.macd)}
+            </td>
+
+            <td>
+                ${formatIndicator(row.volume)}
+            </td>
+
+            <td>
+                ${formatPrice(row.support)}
+            </td>
+
+            <td>
+                ${formatPrice(row.resistance)}
+            </td>
+
+            <td>
+                <span class="score">
+                    ${formatNumber(row.score, 0)}
+                </span>
+            </td>
+
+            <td>
+                <span class="signal-badge ${signalClass}">
+                    ${escapeHTML(row.signal)}
+                </span>
+            </td>
+
+            <td>
+                ${formatPrice(row.sl)}
+            </td>
+
+            <td>
+                ${formatPrice(row.target)}
+            </td>
+
+            <td>
+                ${
+                    numberValue(row.rr, NaN) !==
+                    NaN
+                        ? formatNumber(row.rr, 2)
+                        : "--"
+                }
+            </td>
+
+        </tr>
+    `;
+}
+
+
+/* =========================================================
+   SIGNAL CLASS
+   ========================================================= */
+
+function getSignalClass(signal) {
+
+    if (signal === "BUY") {
         return "signal-buy";
     }
 
-    if (value === "SELL") {
+    if (signal === "SELL") {
         return "signal-sell";
     }
 
@@ -126,987 +1049,658 @@ function signalClass(signal) {
 }
 
 
-function directionClass(direction) {
-    const value = normalizeDirection(direction);
+/* =========================================================
+   SIGNAL TEXT
+   ========================================================= */
 
-    if (value === "BUY") {
-        return "direction-buy";
+function signalText(value) {
+
+    if (
+        value === null ||
+        value === undefined ||
+        value === ""
+    ) {
+        return "--";
     }
 
-    if (value === "SELL") {
-        return "direction-sell";
-    }
-
-    return "direction-wait";
-}
-
-
-function displayDirection(value) {
-    const direction = normalizeDirection(value);
-
-    if (direction === "BUY") {
-        return "BUY";
-    }
-
-    if (direction === "SELL") {
-        return "SELL";
-    }
-
-    return "WAIT";
-}
-
-
-// =====================================================
-// API
-// =====================================================
-
-async function apiGet(url) {
-    const response = await fetch(url, {
-        method: "GET",
-        cache: "no-store"
-    });
-
-    if (!response.ok) {
-        throw new Error(
-            `HTTP ${response.status}: ${response.statusText}`
-        );
-    }
-
-    return await response.json();
-}
-
-
-async function apiPost(url, data = {}) {
-    const response = await fetch(url, {
-        method: "POST",
-        headers: {
-            "Content-Type": "application/json"
-        },
-        body: JSON.stringify(data)
-    });
-
-    if (!response.ok) {
-        const text = await response.text();
-
-        throw new Error(
-            `HTTP ${response.status}: ${text || response.statusText}`
-        );
-    }
-
-    return await response.json();
-}
-
-
-// =====================================================
-// STATUS
-// =====================================================
-
-async function loadStatus() {
-    try {
-
-        const data = await apiGet("/api/status");
-
-        state.status = data || {};
-
-        updateConnection(data);
-        updateDataStatus(data);
-
-    } catch (error) {
-
-        console.error("Status error:", error);
-
-        updateConnection({
-            connected: false,
-            status: "offline"
-        });
-
-        if ($("historyStatus")) {
-            $("historyStatus").textContent =
-                "Unable to read scanner status";
-        }
-    }
-}
-
-
-function updateConnection(data) {
-
-    const connected =
-        data?.connected === true ||
-        data?.status === "connected" ||
-        data?.status === "running" ||
-        data?.online === true;
-
-    const dot = $("statusDot");
-    const text = $("statusText");
-
-    if (!dot || !text) {
-        return;
-    }
-
-    dot.classList.remove(
-        "online",
-        "offline",
-        "warning"
-    );
-
-    if (connected) {
-
-        dot.classList.add("online");
-        text.textContent = "Connected";
-
-    } else {
-
-        dot.classList.add("warning");
-        text.textContent = "Connecting...";
-    }
-}
-
-
-function updateDataStatus(data) {
-
-    const loaded =
-        safeNumber(
-            data?.history_loaded ??
-            data?.loaded_stocks ??
-            data?.stocks_loaded ??
-            0
-        );
-
-    const total =
-        safeNumber(
-            data?.total_stocks ??
-            data?.universe_size ??
-            data?.fno_stocks ??
-            0
-        );
-
-    if ($("loadedStocks")) {
-        $("loadedStocks").textContent =
-            loaded.toLocaleString("en-IN");
-    }
-
-    if ($("dataStatus")) {
-
-        if (loaded > 0) {
-            $("dataStatus").textContent = "LIVE";
-        } else {
-            $("dataStatus").textContent = "WAITING";
-        }
-    }
-
-    if ($("historyStatus")) {
-
-        if (total > 0 && loaded > 0) {
-
-            $("historyStatus").textContent =
-                `Historical candles loaded for ${loaded}/${total} stocks`;
-
-        } else if (total > 0) {
-
-            $("historyStatus").textContent =
-                `Historical candles loaded for 0/${total} stocks`;
-
-        } else {
-
-            $("historyStatus").textContent =
-                "Waiting for market data...";
-        }
-    }
-}
-
-
-// =====================================================
-// SETTINGS
-// =====================================================
-
-const settingMap = {
-    entryTimeframe: "entry_timeframe",
-    waveTimeframe: "wave_timeframe",
-    tideTimeframe: "tide_timeframe",
-
-    emaFast: "ema_fast",
-    emaMedium: "ema_medium",
-    emaSlow: "ema_slow",
-
-    rsiPeriod: "rsi_period",
-
-    macdFast: "macd_fast",
-    macdSlow: "macd_slow",
-    macdSignal: "macd_signal",
-
-    stochPeriod: "stoch_period",
-    stochSmooth: "stoch_smooth",
-
-    volumePeriod: "volume_period",
-
-    srLookback: "sr_lookback",
-    pivot: "pivot",
-
-    minConfirmation: "min_confirmation",
-
-    riskReward: "risk_reward",
-
-    buyThreshold: "buy_threshold",
-    sellThreshold: "sell_threshold"
-};
-
-
-function getInputValue(elementId) {
-
-    const element = $(elementId);
-
-    if (!element) {
-        return null;
-    }
-
-    if (element.tagName === "SELECT") {
-        return element.value;
-    }
-
-    return safeNumber(element.value);
-}
-
-
-function collectSettings() {
-
-    const settings = {};
-
-    for (const [elementId, key] of Object.entries(settingMap)) {
-
-        const value = getInputValue(elementId);
-
-        if (value !== null) {
-            settings[key] = value;
-        }
-    }
-
-    return settings;
-}
-
-
-function setInputValue(elementId, value) {
-
-    const element = $(elementId);
-
-    if (!element || value === undefined || value === null) {
-        return;
-    }
-
-    element.value = value;
-}
-
-
-function applySettingsToForm(settings) {
-
-    if (!settings || typeof settings !== "object") {
-        return;
-    }
-
-    for (const [elementId, key] of Object.entries(settingMap)) {
-
-        if (settings[key] !== undefined) {
-            setInputValue(elementId, settings[key]);
-        }
-    }
-}
-
-
-async function loadSettings() {
-
-    try {
-
-        const data = await apiGet("/api/settings");
-
-        let settings = data;
-
-        if (data && data.settings) {
-            settings = data.settings;
-        }
-
-        state.settings = settings || {};
-
-        applySettingsToForm(state.settings);
-
-    } catch (error) {
-
-        console.error("Settings load error:", error);
-    }
-}
-
-
-async function saveSettings() {
-
-    const button = $("applySettings");
-    const message = $("settingsMessage");
-
-    const settings = collectSettings();
-
-    if (button) {
-        button.disabled = true;
-        button.textContent = "Applying...";
-    }
-
-    if (message) {
-        message.textContent = "";
-        message.className = "";
-    }
-
-    try {
-
-        const response = await apiPost(
-            "/api/settings",
-            settings
-        );
-
-        state.settings = response?.settings || settings;
-
-        applySettingsToForm(state.settings);
-
-        if (message) {
-            message.textContent = "Settings applied";
-            message.className = "success-message";
-        }
-
-        await loadScanner();
-
-    } catch (error) {
-
-        console.error("Settings save error:", error);
-
-        if (message) {
-            message.textContent =
-                `Error: ${error.message}`;
-
-            message.className = "error-message";
-        }
-
-    } finally {
-
-        if (button) {
-            button.disabled = false;
-            button.textContent = "Apply Settings";
-        }
-    }
-}
-
-
-async function resetSettings() {
-
-    const button = $("resetSettings");
-
-    if (button) {
-        button.disabled = true;
-        button.textContent = "Resetting...";
-    }
-
-    try {
-
-        const response = await apiPost("/api/reset", {});
-
-        const settings =
-            response?.settings ||
-            response?.data ||
-            response;
-
-        state.settings = settings || {};
-
-        applySettingsToForm(state.settings);
-
-        const message = $("settingsMessage");
-
-        if (message) {
-            message.textContent =
-                "Settings reset to default";
-
-            message.className =
-                "success-message";
-        }
-
-        await loadScanner();
-
-    } catch (error) {
-
-        console.error("Reset error:", error);
-
-        const message = $("settingsMessage");
-
-        if (message) {
-            message.textContent =
-                `Reset error: ${error.message}`;
-
-            message.className =
-                "error-message";
-        }
-
-    } finally {
-
-        if (button) {
-            button.disabled = false;
-            button.textContent = "Reset";
-        }
-    }
-}
-
-
-// =====================================================
-// SCANNER
-// =====================================================
-
-async function loadScanner() {
-
-    try {
-
-        const data = await apiGet("/api/scanner");
-
-        let rows = [];
-
-        if (Array.isArray(data)) {
-            rows = data;
-        } else if (Array.isArray(data?.stocks)) {
-            rows = data.stocks;
-        } else if (Array.isArray(data?.scanner)) {
-            rows = data.scanner;
-        } else if (Array.isArray(data?.data)) {
-            rows = data.data;
-        } else if (Array.isArray(data?.results)) {
-            rows = data.results;
-        }
-
-        state.scanner = rows;
-
-        renderScanner(rows);
-        updateSummary(rows);
-
-        updateLastUpdate();
-
-    } catch (error) {
-
-        console.error("Scanner error:", error);
-
-        const body = $("scannerBody");
-
-        if (body) {
-
-            body.innerHTML = `
-                <tr>
-                    <td colspan="17" class="empty-state error-row">
-                        Unable to load scanner data
-                    </td>
-                </tr>
-            `;
-        }
-    }
-}
-
-
-// =====================================================
-// NORMALIZE STOCK DATA
-// =====================================================
-
-function getStockSymbol(row) {
-
-    return (
-        row?.symbol ??
-        row?.trading_symbol ??
-        row?.groww_symbol ??
-        row?.name ??
-        row?.ticker ??
-        "--"
-    );
-}
-
-
-function getLtp(row) {
-
-    return (
-        row?.ltp ??
-        row?.last_price ??
-        row?.lastPrice ??
-        row?.price ??
-        row?.close ??
-        0
-    );
-}
-
-
-function getChange(row) {
-
-    return (
-        row?.change_percent ??
-        row?.change_pct ??
-        row?.changePercent ??
-        row?.percent_change ??
-        row?.change ??
-        0
-    );
-}
-
-
-function getWave(row) {
-
-    return (
-        row?.wave ??
-        row?.wave_direction ??
-        row?.wave_signal ??
-        "WAIT"
-    );
-}
-
-
-function getTide(row) {
-
-    return (
-        row?.tide ??
-        row?.tide_direction ??
-        row?.tide_signal ??
-        "WAIT"
-    );
-}
-
-
-function getSignal(row) {
-
-    return (
-        row?.signal ??
-        row?.action ??
-        row?.trade_signal ??
-        "WAIT"
-    );
-}
-
-
-function getScore(row) {
-
-    return (
-        row?.score ??
-        row?.signal_score ??
-        row?.total_score ??
-        0
-    );
-}
-
-
-function getRsi(row) {
-
-    return (
-        row?.rsi ??
-        row?.RSI ??
-        row?.rsi_value ??
-        0
-    );
-}
-
-
-function getMacd(row) {
-
-    return (
-        row?.macd ??
-        row?.MACD ??
-        row?.macd_value ??
-        0
-    );
-}
-
-
-function getEma(row) {
-
-    return (
-        row?.ema_direction ??
-        row?.ema_signal ??
-        row?.ema_trend ??
-        row?.ema ??
-        "WAIT"
-    );
-}
-
-
-function getVolume(row) {
-
-    return (
-        row?.volume_signal ??
-        row?.volume_status ??
-        row?.volume ??
-        "WAIT"
-    );
-}
-
-
-function getSupport(row) {
-
-    return (
-        row?.support ??
-        row?.support_level ??
-        row?.support_price ??
-        0
-    );
-}
-
-
-function getResistance(row) {
-
-    return (
-        row?.resistance ??
-        row?.resistance_level ??
-        row?.resistance_price ??
-        0
-    );
-}
-
-
-function getStopLoss(row) {
-
-    return (
-        row?.stop_loss ??
-        row?.sl ??
-        row?.stopLoss ??
-        0
-    );
-}
-
-
-function getTarget(row) {
-
-    return (
-        row?.target ??
-        row?.target_price ??
-        row?.targetPrice ??
-        0
-    );
-}
-
-
-function getRR(row) {
-
-    return (
-        row?.rr ??
-        row?.risk_reward ??
-        row?.riskReward ??
-        0
-    );
-}
-
-
-// =====================================================
-// TABLE
-// =====================================================
-
-function renderScanner(rows) {
-
-    const body = $("scannerBody");
-
-    if (!body) {
-        return;
-    }
-
-    const filtered = filterRows(rows);
-
-    if (!filtered.length) {
-
-        body.innerHTML = `
-            <tr>
-                <td colspan="17" class="empty-state">
-                    No stocks match the current filter
-                </td>
-            </tr>
-        `;
-
-        return;
-    }
-
-    body.innerHTML = filtered.map((row, index) => {
-
-        const symbol =
-            escapeHtml(getStockSymbol(row));
-
-        const ltp =
-            getLtp(row);
-
-        const change =
-            safeNumber(getChange(row));
-
-        const wave =
-            normalizeDirection(getWave(row));
-
-        const tide =
-            normalizeDirection(getTide(row));
-
-        const ema =
-            normalizeDirection(getEma(row));
-
-        const rsi =
-            safeNumber(getRsi(row));
-
-        const macd =
-            safeNumber(getMacd(row));
-
-        const volume =
-            normalizeDirection(getVolume(row));
-
-        const support =
-            getSupport(row);
-
-        const resistance =
-            getResistance(row);
-
-        const score =
-            safeNumber(getScore(row));
-
-        const signal =
-            normalizeDirection(getSignal(row));
-
-        const sl =
-            getStopLoss(row);
-
-        const target =
-            getTarget(row);
-
-        const rr =
-            safeNumber(getRR(row));
-
-        const changeClass =
-            change > 0
-                ? "positive"
-                : change < 0
-                    ? "negative"
-                    : "";
+    const text =
+        String(value)
+            .toUpperCase();
+
+    if (
+        text === "BUY" ||
+        text === "BULLISH"
+    ) {
 
         return `
-            <tr>
-
-                <td>${index + 1}</td>
-
-                <td>
-                    <div class="stock-name">
-                        ${symbol}
-                    </div>
-                </td>
-
-                <td class="price-cell">
-                    ${formatPrice(ltp)}
-                </td>
-
-                <td class="${changeClass}">
-                    ${change > 0 ? "+" : ""}
-                    ${formatNumber(change, 2)}%
-                </td>
-
-                <td>
-                    <span class="direction ${directionClass(wave)}">
-                        ${wave}
-                    </span>
-                </td>
-
-                <td>
-                    <span class="direction ${directionClass(tide)}">
-                        ${tide}
-                    </span>
-                </td>
-
-                <td>
-                    <span class="direction ${directionClass(ema)}">
-                        ${ema}
-                    </span>
-                </td>
-
-                <td>
-                    ${formatNumber(rsi, 2)}
-                </td>
-
-                <td>
-                    ${formatNumber(macd, 4)}
-                </td>
-
-                <td>
-                    <span class="direction ${directionClass(volume)}">
-                        ${volume}
-                    </span>
-                </td>
-
-                <td>
-                    ${formatPrice(support)}
-                </td>
-
-                <td>
-                    ${formatPrice(resistance)}
-                </td>
-
-                <td>
-                    <span class="score">
-                        ${formatNumber(score, 0)}
-                    </span>
-                </td>
-
-                <td>
-                    <span class="signal ${signalClass(signal)}">
-                        ${signal}
-                    </span>
-                </td>
-
-                <td>
-                    ${formatPrice(sl)}
-                </td>
-
-                <td>
-                    ${formatPrice(target)}
-                </td>
-
-                <td>
-                    ${rr > 0 ? "1:" + formatNumber(rr, 1) : "--"}
-                </td>
-
-            </tr>
+            <span class="positive">
+                ${escapeHTML(text)}
+            </span>
         `;
+    }
 
-    }).join("");
+    if (
+        text === "SELL" ||
+        text === "BEARISH"
+    ) {
+
+        return `
+            <span class="negative">
+                ${escapeHTML(text)}
+            </span>
+        `;
+    }
+
+    return escapeHTML(
+        String(value)
+    );
 }
 
 
-function filterRows(rows) {
+/* =========================================================
+   INDICATOR TEXT
+   ========================================================= */
 
-    const search =
-        state.search.trim().toUpperCase();
+function formatIndicator(value) {
 
-    const filter =
-        state.filter;
+    if (
+        value === null ||
+        value === undefined ||
+        value === ""
+    ) {
+        return "--";
+    }
 
-    return rows.filter(row => {
-
-        const symbol =
-            String(getStockSymbol(row))
-                .toUpperCase();
-
-        const signal =
-            normalizeDirection(getSignal(row));
-
-        const matchesSearch =
-            !search ||
-            symbol.includes(search);
-
-        const matchesFilter =
-            filter === "ALL" ||
-            signal === filter;
-
-        return (
-            matchesSearch &&
-            matchesFilter
+    if (
+        typeof value === "number"
+    ) {
+        return formatNumber(
+            value,
+            2
         );
-    });
+    }
+
+    return escapeHTML(
+        String(value)
+    );
 }
 
 
-// =====================================================
-// SUMMARY
-// =====================================================
+/* =========================================================
+   SIGNAL COUNTERS
+   ========================================================= */
 
-function updateSummary(rows) {
+function updateSignalCounters() {
 
     let buy = 0;
     let sell = 0;
     let wait = 0;
 
-    for (const row of rows) {
 
-        const signal =
-            normalizeDirection(getSignal(row));
+    for (
+        const row of state.scanner
+    ) {
 
-        if (signal === "BUY") {
+        if (row.signal === "BUY") {
             buy++;
-        } else if (signal === "SELL") {
+        } else if (
+            row.signal === "SELL"
+        ) {
             sell++;
         } else {
             wait++;
         }
     }
 
-    if ($("totalStocks")) {
-        $("totalStocks").textContent =
-            rows.length.toLocaleString("en-IN");
+
+    setText(
+        "buySignals",
+        formatInteger(buy)
+    );
+
+    setText(
+        "sellSignals",
+        formatInteger(sell)
+    );
+
+    setText(
+        "waitSignals",
+        formatInteger(wait)
+    );
+}
+
+
+/* =========================================================
+   SETTINGS
+   ========================================================= */
+
+const SETTING_FIELDS = {
+
+    entryTimeframe: [
+        "entry_timeframe",
+        "entryTimeframe"
+    ],
+
+    waveTimeframe: [
+        "wave_timeframe",
+        "waveTimeframe"
+    ],
+
+    tideTimeframe: [
+        "tide_timeframe",
+        "tideTimeframe"
+    ],
+
+    emaFast: [
+        "ema_fast",
+        "emaFast"
+    ],
+
+    emaMedium: [
+        "ema_medium",
+        "emaMedium"
+    ],
+
+    emaSlow: [
+        "ema_slow",
+        "emaSlow"
+    ],
+
+    rsiPeriod: [
+        "rsi_period",
+        "rsiPeriod"
+    ],
+
+    macdFast: [
+        "macd_fast",
+        "macdFast"
+    ],
+
+    macdSlow: [
+        "macd_slow",
+        "macdSlow"
+    ],
+
+    macdSignal: [
+        "macd_signal",
+        "macdSignal"
+    ],
+
+    stochasticPeriod: [
+        "stochastic_period",
+        "stochasticPeriod"
+    ],
+
+    stochasticSmooth: [
+        "stochastic_smooth",
+        "stochasticSmooth"
+    ],
+
+    volumeSma: [
+        "volume_sma",
+        "volumeSma"
+    ],
+
+    srLookback: [
+        "sr_lookback",
+        "srLookback"
+    ],
+
+    pivot: [
+        "pivot",
+        "pivot_points"
+    ],
+
+    minConfirmation: [
+        "min_confirmation",
+        "minConfirmation"
+    ],
+
+    riskReward: [
+        "risk_reward",
+        "riskReward"
+    ],
+
+    buyScore: [
+        "buy_score",
+        "buyScore"
+    ],
+
+    sellScore: [
+        "sell_score",
+        "sellScore"
+    ]
+};
+
+
+/* =========================================================
+   FIND SETTING VALUE
+   ========================================================= */
+
+function findSetting(
+    data,
+    keys
+) {
+
+    if (!data) {
+        return undefined;
     }
 
-    if ($("buyCount")) {
-        $("buyCount").textContent =
-            buy.toLocaleString("en-IN");
+    for (
+        const key of keys
+    ) {
+
+        if (
+            data[key] !== undefined &&
+            data[key] !== null
+        ) {
+            return data[key];
+        }
     }
 
-    if ($("sellCount")) {
-        $("sellCount").textContent =
-            sell.toLocaleString("en-IN");
-    }
+    return undefined;
+}
 
-    if ($("waitCount")) {
-        $("waitCount").textContent =
-            wait.toLocaleString("en-IN");
+
+/* =========================================================
+   LOAD SETTINGS
+   ========================================================= */
+
+async function loadSettings() {
+
+    try {
+
+        const data =
+            await apiRequest(
+                API.settings
+            );
+
+        const settings =
+            data.settings ??
+            data.data ??
+            data;
+
+        state.settings =
+            settings || {};
+
+        populateSettings(
+            state.settings
+        );
+
+    } catch (error) {
+
+        console.warn(
+            "Settings could not be loaded:",
+            error
+        );
+
+        /*
+           Keep the HTML defaults if backend
+           settings aren't available.
+        */
     }
 }
 
 
-// =====================================================
-// TIME
-// =====================================================
+/* =========================================================
+   POPULATE SETTINGS
+   ========================================================= */
 
-function updateLastUpdate() {
+function populateSettings(
+    settings
+) {
 
-    const element = $("lastUpdate");
+    for (
+        const [
+            elementId,
+            keys
+        ] of Object.entries(
+            SETTING_FIELDS
+        )
+    ) {
 
-    if (!element) {
-        return;
+        const value =
+            findSetting(
+                settings,
+                keys
+            );
+
+        if (
+            value === undefined
+        ) {
+            continue;
+        }
+
+        const element =
+            $(elementId);
+
+        if (!element) {
+            continue;
+        }
+
+        element.value =
+            value;
     }
-
-    const now = new Date();
-
-    element.textContent =
-        `Updated ${now.toLocaleTimeString("en-IN")}`;
 }
 
 
-// =====================================================
-// EVENTS
-// =====================================================
+/* =========================================================
+   COLLECT SETTINGS
+   ========================================================= */
+
+function collectSettings() {
+
+    const settings = {};
+
+    for (
+        const [
+            elementId,
+            keys
+        ] of Object.entries(
+            SETTING_FIELDS
+        )
+    ) {
+
+        const element =
+            $(elementId);
+
+        if (!element) {
+            continue;
+        }
+
+        let value =
+            element.value;
+
+
+        if (
+            element.type === "number"
+        ) {
+
+            value =
+                Number(value);
+        }
+
+
+        /*
+           Send the first backend-style
+           snake_case name.
+        */
+
+        settings[keys[0]] =
+            value;
+    }
+
+    return settings;
+}
+
+
+/* =========================================================
+   APPLY SETTINGS
+   ========================================================= */
+
+async function applySettings() {
+
+    const button =
+        $("applySettings");
+
+    const message =
+        $("settingsMessage");
+
+
+    const settings =
+        collectSettings();
+
+
+    if (button) {
+
+        button.disabled = true;
+
+        button.textContent =
+            "Saving...";
+    }
+
+
+    if (message) {
+
+        message.textContent =
+            "Applying settings...";
+    }
+
+
+    try {
+
+        await apiRequest(
+            API.settings,
+            {
+                method: "POST",
+
+                headers: {
+                    "Content-Type":
+                        "application/json"
+                },
+
+                body:
+                    JSON.stringify(
+                        settings
+                    )
+            }
+        );
+
+
+        state.settings =
+            settings;
+
+
+        if (message) {
+
+            message.textContent =
+                "✓ Settings applied";
+        }
+
+
+        /*
+           Give backend a moment to recalculate.
+        */
+
+        setTimeout(
+            loadScanner,
+            500
+        );
+
+
+        setTimeout(
+            () => {
+
+                if (message) {
+                    message.textContent = "";
+                }
+
+            },
+            3000
+        );
+
+
+    } catch (error) {
+
+        console.error(
+            "Settings save error:",
+            error
+        );
+
+
+        if (message) {
+
+            message.textContent =
+                `Error: ${error.message}`;
+        }
+
+    } finally {
+
+        if (button) {
+
+            button.disabled = false;
+
+            button.textContent =
+                "Apply Settings";
+        }
+    }
+}
+
+
+/* =========================================================
+   RESET SETTINGS
+   ========================================================= */
+
+async function resetSettings() {
+
+    const button =
+        $("resetSettings");
+
+    const message =
+        $("settingsMessage");
+
+
+    if (button) {
+
+        button.disabled = true;
+
+        button.textContent =
+            "Resetting...";
+    }
+
+
+    try {
+
+        /*
+           Try backend reset first.
+        */
+
+        let data = null;
+
+        try {
+
+            data =
+                await apiRequest(
+                    API.reset,
+                    {
+                        method: "POST"
+                    }
+                );
+
+        } catch (resetError) {
+
+            /*
+               If backend doesn't expose reset,
+               simply reload defaults from settings.
+            */
+
+            console.warn(
+                "Backend reset unavailable:",
+                resetError
+            );
+        }
+
+
+        if (
+            data &&
+            (
+                data.settings ||
+                data.data
+            )
+        ) {
+
+            populateSettings(
+                data.settings ||
+                data.data
+            );
+
+        } else {
+
+            await loadSettings();
+        }
+
+
+        if (message) {
+
+            message.textContent =
+                "✓ Settings reset";
+        }
+
+
+        setTimeout(
+            () => {
+
+                if (message) {
+                    message.textContent = "";
+                }
+
+            },
+            2500
+        );
+
+
+    } catch (error) {
+
+        console.error(
+            "Reset error:",
+            error
+        );
+
+
+        if (message) {
+
+            message.textContent =
+                `Error: ${error.message}`;
+        }
+
+    } finally {
+
+        if (button) {
+
+            button.disabled = false;
+
+            button.textContent =
+                "Reset";
+        }
+    }
+}
+
+
+/* =========================================================
+   EVENT LISTENERS
+   ========================================================= */
 
 function setupEvents() {
 
-    const applyButton =
-        $("applySettings");
 
-    if (applyButton) {
-        applyButton.addEventListener(
-            "click",
-            saveSettings
-        );
-    }
+    /* -----------------------------------------------------
+       SIGNAL FILTER
+       ----------------------------------------------------- */
 
-
-    const resetButton =
-        $("resetSettings");
-
-    if (resetButton) {
-        resetButton.addEventListener(
-            "click",
-            resetSettings
-        );
-    }
-
-
-    const filter =
+    const signalFilter =
         $("signalFilter");
 
-    if (filter) {
+    if (signalFilter) {
 
-        filter.addEventListener(
+        signalFilter.addEventListener(
             "change",
             event => {
 
-                state.filter =
+                state.signalFilter =
                     event.target.value;
 
-                renderScanner(state.scanner);
+                applyFilters();
             }
         );
     }
 
 
+    /* -----------------------------------------------------
+       STOCK SEARCH
+       ----------------------------------------------------- */
+
     const search =
-        $("searchStock");
+        $("stockSearch");
 
     if (search) {
 
@@ -1114,73 +1708,184 @@ function setupEvents() {
             "input",
             event => {
 
-                state.search =
+                state.searchText =
                     event.target.value;
 
-                renderScanner(state.scanner);
+                applyFilters();
             }
+        );
+    }
+
+
+    /* -----------------------------------------------------
+       APPLY SETTINGS
+       ----------------------------------------------------- */
+
+    const apply =
+        $("applySettings");
+
+    if (apply) {
+
+        apply.addEventListener(
+            "click",
+            applySettings
+        );
+    }
+
+
+    /* -----------------------------------------------------
+       RESET SETTINGS
+       ----------------------------------------------------- */
+
+    const reset =
+        $("resetSettings");
+
+    if (reset) {
+
+        reset.addEventListener(
+            "click",
+            resetSettings
         );
     }
 }
 
 
-// =====================================================
-// POLLING
-// =====================================================
-
-let scannerTimer = null;
-let statusTimer = null;
-
+/* =========================================================
+   AUTO REFRESH
+   ========================================================= */
 
 function startPolling() {
 
-    if (scannerTimer) {
-        clearInterval(scannerTimer);
+    /*
+       Clear old timers first.
+    */
+
+    if (state.statusTimer) {
+
+        clearInterval(
+            state.statusTimer
+        );
     }
 
-    if (statusTimer) {
-        clearInterval(statusTimer);
+    if (state.scannerTimer) {
+
+        clearInterval(
+            state.scannerTimer
+        );
     }
 
-    /*
-     * Scanner refresh:
-     * every 5 seconds
-     */
-    scannerTimer = setInterval(
-        loadScanner,
-        5000
-    );
 
     /*
-     * Status refresh:
-     * every 5 seconds
-     */
-    statusTimer = setInterval(
-        loadStatus,
-        5000
-    );
+       STATUS
+    */
+
+    state.statusTimer =
+        setInterval(
+            loadStatus,
+            POLL_INTERVAL
+        );
+
+
+    /*
+       SCANNER
+    */
+
+    state.scannerTimer =
+        setInterval(
+            loadScanner,
+            SCANNER_INTERVAL
+        );
 }
 
 
-// =====================================================
-// START APPLICATION
-// =====================================================
+/* =========================================================
+   INITIALIZATION
+   ========================================================= */
 
-async function startApp() {
+async function initializeApp() {
+
+    console.log(
+        "Indian F&O Scanner starting..."
+    );
+
 
     setupEvents();
 
-    await loadSettings();
+
+    /*
+       Initial status.
+    */
 
     await loadStatus();
 
+
+    /*
+       Load settings.
+    */
+
+    await loadSettings();
+
+
+    /*
+       Load scanner.
+    */
+
     await loadScanner();
 
+
+    /*
+       Start automatic refresh.
+    */
+
     startPolling();
+
+
+    console.log(
+        "Indian F&O Scanner ready."
+    );
 }
 
 
+/* =========================================================
+   PAGE VISIBILITY
+   ========================================================= */
+
 document.addEventListener(
-    "DOMContentLoaded",
-    startApp
+    "visibilitychange",
+    () => {
+
+        /*
+           When user comes back to the tab,
+           immediately refresh the data.
+        */
+
+        if (
+            document.visibilityState ===
+            "visible"
+        ) {
+
+            loadStatus();
+            loadScanner();
+        }
+    }
 );
+
+
+/* =========================================================
+   START
+   ========================================================= */
+
+if (
+    document.readyState ===
+    "loading"
+) {
+
+    document.addEventListener(
+        "DOMContentLoaded",
+        initializeApp
+    );
+
+} else {
+
+    initializeApp();
+}

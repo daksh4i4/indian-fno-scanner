@@ -27,7 +27,11 @@ function render() {
       <td>${esc(x.wave)}</td>
       <td>${esc(x.tide)}</td>
       <td><b>${Number(x.score||0).toFixed(0)}</b></td>
-      <td>1:${Number(x.rr||2).toFixed(1)}</td>
+      <td>${Number(x.confirmation||0)}</td>
+      <td>${Number(x.rsi||0).toFixed(1)}</td>
+      <td>1:${Number(x.rr||0).toFixed(2)}</td>
+      <td>${x.sl ? Number(x.sl).toFixed(2) : "—"}</td>
+      <td>${x.target ? Number(x.target).toFixed(2) : "—"}</td>
       <td><span class="signal ${String(x.signal).toLowerCase()}">${esc(x.signal)}</span></td>
     </tr>`).join("");
 }
@@ -36,6 +40,7 @@ async function refresh() {
   try {
     const s = await api("/api/status");
     document.getElementById("status").textContent = String(s.status).toUpperCase();
+    document.querySelector(".topbar p").textContent = s.message || "Groww Live Data • NSE F&O • Multi-Timeframe Technical Scanner";
     document.getElementById("dot").className = s.feed_connected ? "on" : "";
     const d = await api("/api/scanner");
     allRows = d.stocks || [];

@@ -1,0 +1,6 @@
+fastapi
+uvicorn[standard]
+growwapi
+pandas
+numpy
+python-dotenv

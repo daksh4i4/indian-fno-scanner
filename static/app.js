@@ -1,68 +1,127 @@
-/* =========================================================
+/* ============================================================
    INDIAN F&O SCANNER
-   PROFESSIONAL DASHBOARD JAVASCRIPT
-   ========================================================= */
+   PROFESSIONAL FRONTEND CONTROLLER
+
+   Wave  : 15m
+   Tide  : 1h
+   Wave EMA   : 9 / 20 / 50
+   Tide EMA   : 9 / 20 / 50
+   Filter EMA : 20 / 50
+   Heikin Ashi confirmation
+   ============================================================ */
 
 "use strict";
 
 
-/* =========================================================
+/* ============================================================
    CONFIGURATION
-   ========================================================= */
+============================================================ */
 
 const API = {
-    status: "/api/status",
-    scanner: "/api/scanner",
-    settings: "/api/settings",
-    reset: "/api/reset"
+    STATUS: "/api/status",
+    SCANNER: "/api/scanner",
+    SETTINGS: "/api/settings",
+    RESET: "/api/reset"
 };
 
 
-/*
-   IMPORTANT
-   We deliberately DO NOT call /api/groww-test automatically.
-
-   Groww authentication has a rate limit.
-   The dashboard should only read the existing backend status.
-*/
+const REFRESH_INTERVAL = 5000;
+const STATUS_INTERVAL = 5000;
 
 
-const POLL_INTERVAL = 10000;
-const SCANNER_INTERVAL = 15000;
+/* ============================================================
+   DEFAULT SETTINGS
+============================================================ */
+
+const DEFAULT_SETTINGS = {
+
+    wave_timeframe: "15m",
+    tide_timeframe: "1h",
+
+    wave_ema_fast: 9,
+    wave_ema_medium: 20,
+    wave_ema_slow: 50,
+
+    tide_ema_fast: 9,
+    tide_ema_medium: 20,
+    tide_ema_slow: 50,
+
+    filter_ema_fast: 20,
+    filter_ema_slow: 50,
+
+    wave_heikin_ashi: true,
+    tide_heikin_ashi: true,
+
+    rsi_period: 14,
+
+    macd_fast: 12,
+    macd_slow: 26,
+    macd_signal: 9,
+
+    stochastic_period: 14,
+    stochastic_smooth: 3,
+
+    volume_sma: 20,
+
+    sr_lookback: 160,
+    pivot: 3,
+
+    min_confirmation: 7,
+
+    risk_reward: 2,
+
+    buy_score: 70,
+    sell_score: 30,
+
+    minimum_candles: 60
+};
 
 
-/* =========================================================
+/* ============================================================
    APPLICATION STATE
-   ========================================================= */
+============================================================ */
 
 const state = {
-    status: null,
-    scanner: [],
-    filteredScanner: [],
 
-    signalFilter: "ALL",
-    searchText: "",
+    settings: {
+        ...DEFAULT_SETTINGS
+    },
 
-    settings: {},
+    scannerRows: [],
 
-    statusTimer: null,
-    scannerTimer: null,
+    filteredRows: [],
 
-    loadingStatus: false,
-    loadingScanner: false
+    connected: false,
+
+    scannerLoaded: false,
+
+    lastStatus: null,
+
+    lastScannerUpdate: null,
+
+    loadingScanner: false,
+
+    loadingSettings: false,
+
+    search: "",
+
+    signalFilter: "ALL"
 };
 
 
-/* =========================================================
+/* ============================================================
    DOM HELPERS
-   ========================================================= */
+============================================================ */
 
 function $(id) {
+
     return document.getElementById(id);
+
 }
 
 
 function setText(id, value) {
+
     const element = $(id);
 
     if (!element) {
@@ -71,36 +130,40 @@ function setText(id, value) {
 
     element.textContent =
         value === null ||
-        value === undefined ||
-        value === ""
-            ? "--"
+        value === undefined
+            ? "—"
             : String(value);
 }
 
 
 function showElement(id) {
+
     const element = $(id);
 
     if (element) {
-        element.style.display = "";
+        element.classList.remove("hidden");
     }
+
 }
 
 
 function hideElement(id) {
+
     const element = $(id);
 
     if (element) {
-        element.style.display = "none";
+        element.classList.add("hidden");
     }
+
 }
 
 
-/* =========================================================
-   NUMBER HELPERS
-   ========================================================= */
+/* ============================================================
+   SAFE NUMBER
+============================================================ */
 
-function numberValue(value, fallback = 0) {
+function numberValue(value, fallback = null) {
+
     if (
         value === null ||
         value === undefined ||
@@ -109,68 +172,148 @@ function numberValue(value, fallback = 0) {
         return fallback;
     }
 
-    const number = Number(value);
+    const n = Number(value);
 
-    return Number.isFinite(number)
-        ? number
-        : fallback;
+    if (!Number.isFinite(n)) {
+        return fallback;
+    }
+
+    return n;
 }
 
 
-function formatNumber(value, decimals = 2) {
-    const number = numberValue(value, NaN);
+/* ============================================================
+   NUMBER FORMAT
+============================================================ */
 
-    if (!Number.isFinite(number)) {
-        return "--";
+function formatNumber(value, decimals = 2) {
+
+    const n = numberValue(value);
+
+    if (n === null) {
+        return "—";
     }
 
-    return number.toLocaleString("en-IN", {
-        minimumFractionDigits: decimals,
-        maximumFractionDigits: decimals
-    });
+    return n.toLocaleString(
+        "en-IN",
+        {
+            minimumFractionDigits: decimals,
+            maximumFractionDigits: decimals
+        }
+    );
 }
 
 
 function formatInteger(value) {
-    const number = numberValue(value, NaN);
 
-    if (!Number.isFinite(number)) {
-        return "--";
+    const n = numberValue(value);
+
+    if (n === null) {
+        return "0";
     }
 
-    return Math.round(number).toLocaleString("en-IN");
+    return Math.round(n).toLocaleString("en-IN");
 }
 
 
-function formatPrice(value) {
-    const number = numberValue(value, NaN);
+function formatPercent(value) {
 
-    if (!Number.isFinite(number)) {
-        return "--";
+    const n = numberValue(value);
+
+    if (n === null) {
+        return "—";
     }
 
-    if (Math.abs(number) >= 1000) {
-        return number.toLocaleString("en-IN", {
-            minimumFractionDigits: 2,
-            maximumFractionDigits: 2
-        });
-    }
-
-    if (Math.abs(number) >= 100) {
-        return number.toFixed(2);
-    }
-
-    if (Math.abs(number) >= 10) {
-        return number.toFixed(2);
-    }
-
-    return number.toFixed(2);
+    return `${n.toFixed(2)}%`;
 }
 
 
-/* =========================================================
-   HTML SAFETY
-   ========================================================= */
+/* ============================================================
+   TIMEFRAME LABEL
+============================================================ */
+
+function timeframeLabel(value) {
+
+    const map = {
+
+        "1m": "1 Minute",
+        "2m": "2 Minutes",
+        "3m": "3 Minutes",
+        "5m": "5 Minutes",
+        "10m": "10 Minutes",
+        "15m": "15 Minutes",
+        "30m": "30 Minutes",
+        "1h": "1 Hour",
+        "4h": "4 Hours",
+        "1d": "1 Day",
+        "1w": "1 Week"
+
+    };
+
+    return map[value] || value || "—";
+}
+
+
+/* ============================================================
+   SIGNAL NORMALIZATION
+============================================================ */
+
+function normalizeSignal(value) {
+
+    if (
+        value === null ||
+        value === undefined
+    ) {
+        return "WAIT";
+    }
+
+    const signal =
+        String(value)
+            .trim()
+            .toUpperCase();
+
+    if (
+        signal.includes("BUY") ||
+        signal.includes("LONG")
+    ) {
+        return "BUY";
+    }
+
+    if (
+        signal.includes("SELL") ||
+        signal.includes("SHORT")
+    ) {
+        return "SELL";
+    }
+
+    return "WAIT";
+}
+
+
+/* ============================================================
+   DIRECTION NORMALIZATION
+============================================================ */
+
+function normalizeDirection(value) {
+
+    const signal =
+        normalizeSignal(value);
+
+    if (signal === "BUY") {
+        return "BUY";
+    }
+
+    if (signal === "SELL") {
+        return "SELL";
+    }
+
+    return "WAIT";
+}
+
+
+/* ============================================================
+   HTML ESCAPE
+============================================================ */
 
 function escapeHTML(value) {
 
@@ -190,1121 +333,931 @@ function escapeHTML(value) {
 }
 
 
-/* =========================================================
+/* ============================================================
    API REQUEST
-   ========================================================= */
+============================================================ */
 
 async function apiRequest(
     url,
     options = {}
 ) {
 
-    const response = await fetch(
-        url,
-        {
-            cache: "no-store",
-            ...options,
-
-            headers: {
-                "Accept": "application/json",
-                ...(options.headers || {})
+    const response =
+        await fetch(
+            url,
+            {
+                cache: "no-store",
+                ...options,
+                headers: {
+                    "Accept": "application/json",
+                    ...(options.headers || {})
+                }
             }
-        }
-    );
+        );
 
-    const text = await response.text();
-
-    let data = {};
+    let data = null;
 
     try {
-        data = text
-            ? JSON.parse(text)
-            : {};
+
+        data = await response.json();
+
     } catch (error) {
 
-        data = {
-            raw: text
-        };
+        data = null;
+
     }
+
 
     if (!response.ok) {
 
         const message =
-            data.message ||
-            data.error ||
-            data.detail ||
+            data?.message ||
+            data?.detail ||
             `HTTP ${response.status}`;
 
         throw new Error(message);
+
     }
 
     return data;
+
 }
 
 
-/* =========================================================
-   CONNECTION STATUS
-   ========================================================= */
+/* ============================================================
+   TOAST
+============================================================ */
 
-function updateConnection(
-    connected,
-    error = false
+let toastTimer = null;
+
+
+function showToast(
+    message,
+    type = "info"
 ) {
 
-    const dot = $("connectionDot");
-    const text = $("connectionText");
+    const toast = $("toast");
+    const text = $("toastMessage");
 
-    if (!dot || !text) {
+    if (!toast || !text) {
         return;
     }
 
-    dot.classList.remove(
-        "live",
-        "error"
+    text.textContent = message;
+
+    toast.classList.remove(
+        "toast-success",
+        "toast-error",
+        "toast-info",
+        "show"
     );
 
-    if (error) {
+    if (type === "success") {
 
-        dot.classList.add("error");
+        toast.classList.add(
+            "toast-success"
+        );
 
-        text.textContent =
-            "Connection Error";
+    } else if (type === "error") {
 
+        toast.classList.add(
+            "toast-error"
+        );
+
+    } else {
+
+        toast.classList.add(
+            "toast-info"
+        );
+
+    }
+
+    requestAnimationFrame(() => {
+
+        toast.classList.add("show");
+
+    });
+
+
+    clearTimeout(toastTimer);
+
+    toastTimer =
+        setTimeout(
+            () => {
+
+                toast.classList.remove(
+                    "show"
+                );
+
+            },
+            3000
+        );
+
+}
+
+
+/* ============================================================
+   CONNECTION STATUS
+============================================================ */
+
+function updateConnectionStatus(
+    connected,
+    status = null
+) {
+
+    const pill =
+        $("connectionStatus");
+
+    const text =
+        $("connectionText");
+
+    if (!pill || !text) {
         return;
     }
+
+
+    pill.classList.remove(
+        "status-connected",
+        "status-loading",
+        "status-error"
+    );
+
 
     if (connected) {
 
-        dot.classList.add("live");
+        pill.classList.add(
+            "status-connected"
+        );
 
         text.textContent =
             "Connected";
 
-        return;
+        state.connected = true;
+
+    } else {
+
+        const marketStatus =
+            String(
+                status?.market_status ||
+                ""
+            ).toUpperCase();
+
+
+        if (
+            marketStatus === "ERROR"
+        ) {
+
+            pill.classList.add(
+                "status-error"
+            );
+
+            text.textContent =
+                "Connection Error";
+
+        } else {
+
+            pill.classList.add(
+                "status-loading"
+            );
+
+            text.textContent =
+                "Connecting...";
+
+        }
+
+        state.connected = false;
+
     }
 
-    text.textContent =
-        "Connecting...";
 }
 
 
-/* =========================================================
-   STATUS ERROR
-   ========================================================= */
+/* ============================================================
+   MARKET STATUS
+============================================================ */
 
-function showError(message) {
+function updateMarketStatus(status) {
 
-    const element = $("errorMessage");
+    const element =
+        $("marketStatus");
 
     if (!element) {
         return;
     }
 
-    if (!message) {
 
-        element.textContent = "";
+    const market =
+        String(
+            status?.market_status ||
+            "UNKNOWN"
+        ).toUpperCase();
 
-        element.style.display = "none";
 
+    element.classList.remove(
+        "market-open",
+        "market-closed",
+        "market-error"
+    );
+
+
+    if (
+        market === "OPEN" ||
+        market === "LIVE"
+    ) {
+
+        element.classList.add(
+            "market-open"
+        );
+
+        element.textContent =
+            "● Market Live";
+
+    } else if (
+        market === "ERROR"
+    ) {
+
+        element.classList.add(
+            "market-error"
+        );
+
+        element.textContent =
+            "● Data Error";
+
+    } else {
+
+        element.classList.add(
+            "market-closed"
+        );
+
+        element.textContent =
+            "● Market Data";
+
+    }
+
+}
+
+
+/* ============================================================
+   STATUS
+============================================================ */
+
+async function loadStatus() {
+
+    try {
+
+        const data =
+            await apiRequest(
+                API.STATUS
+            );
+
+
+        state.lastStatus =
+            data;
+
+
+        const authenticated =
+            Boolean(
+                data.authenticated
+            );
+
+
+        updateConnectionStatus(
+            authenticated,
+            data
+        );
+
+
+        updateMarketStatus(
+            data
+        );
+
+
+        setText(
+            "fnoStocks",
+            formatInteger(
+                data.fno_stock_count ??
+                data.fno_stocks ??
+                0
+            )
+        );
+
+
+        const historyLoaded =
+            numberValue(
+                data.history_loaded,
+                0
+            );
+
+
+        const historyFailed =
+            numberValue(
+                data.history_failed,
+                0
+            );
+
+
+        const total =
+            numberValue(
+                data.fno_stock_count ??
+                data.fno_stocks,
+                0
+            );
+
+
+        let progress = 0;
+
+
+        if (total > 0) {
+
+            progress =
+                Math.min(
+                    100,
+                    (
+                        historyLoaded /
+                        total
+                    ) * 100
+                );
+
+        }
+
+
+        const progressText =
+            total > 0
+                ? `${formatInteger(historyLoaded)} / ${formatInteger(total)}`
+                : "Loading...";
+
+
+        setText(
+            "historyProgress",
+            progressText
+        );
+
+
+        const progressBar =
+            $("historyProgressBar");
+
+
+        if (progressBar) {
+
+            progressBar.style.width =
+                `${progress}%`;
+
+        }
+
+
+        if (
+            historyFailed > 0
+        ) {
+
+            const message =
+                `Historical data: ${formatInteger(historyLoaded)} loaded, ${formatInteger(historyFailed)} failed.`;
+
+            setError(
+                message
+            );
+
+        } else if (
+            data.last_error
+        ) {
+
+            setError(
+                String(
+                    data.last_error
+                )
+            );
+
+        } else {
+
+            clearError();
+
+        }
+
+
+        const lastUpdate =
+            data.last_ltp_update ||
+            data.last_history_update;
+
+
+        if (lastUpdate) {
+
+            setText(
+                "lastUpdate",
+                `Last update: ${formatDateTime(lastUpdate)}`
+            );
+
+        }
+
+
+        updateStrategyBadges();
+
+
+    } catch (error) {
+
+        updateConnectionStatus(
+            false,
+            {
+                market_status: "ERROR"
+            }
+        );
+
+
+        setError(
+            error.message ||
+            "Unable to connect to scanner."
+        );
+
+    }
+
+}
+
+
+/* ============================================================
+   ERROR
+============================================================ */
+
+function setError(message) {
+
+    const element =
+        $("errorMessage");
+
+    if (!element) {
         return;
     }
+
+
+    if (
+        !message ||
+        message === "null" ||
+        message === "undefined"
+    ) {
+
+        clearError();
+
+        return;
+
+    }
+
 
     element.textContent =
         String(message);
 
-    element.style.display =
-        "block";
+    element.classList.remove(
+        "hidden"
+    );
+
 }
 
 
-/* =========================================================
-   STATUS UPDATE
-   ========================================================= */
+function clearError() {
 
-async function loadStatus() {
+    const element =
+        $("errorMessage");
 
-    if (state.loadingStatus) {
+    if (!element) {
         return;
     }
 
-    state.loadingStatus = true;
+    element.textContent = "";
 
-    try {
+    element.classList.add(
+        "hidden"
+    );
 
-        const data =
-            await apiRequest(API.status);
-
-        state.status = data;
-
-        updateConnection(
-            true,
-            false
-        );
-
-        updateStatusUI(data);
-
-    } catch (error) {
-
-        console.error(
-            "Status error:",
-            error
-        );
-
-        updateConnection(
-            false,
-            true
-        );
-
-        setText(
-            "marketStatus",
-            "Connection Error"
-        );
-
-        showError(
-            error.message ||
-            "Unable to connect to scanner backend."
-        );
-
-    } finally {
-
-        state.loadingStatus = false;
-    }
 }
 
 
-/* =========================================================
-   STATUS UI
-   ========================================================= */
-
-function updateStatusUI(data) {
-
-    if (!data) {
-        return;
-    }
-
-
-    /* -----------------------------------------------------
-       F&O STOCK COUNT
-       ----------------------------------------------------- */
-
-    const fnoCount =
-        data.fno_stock_count ??
-        data.fnoStocks ??
-        data.fno_stocks ??
-        data.universe_count ??
-        0;
-
-    setText(
-        "fnoStocks",
-        formatInteger(fnoCount)
-    );
-
-
-    setText(
-        "universeStatus",
-        `${formatInteger(fnoCount)} stocks`
-    );
-
-
-    /* -----------------------------------------------------
-       LIVE PRICE COUNT
-       ----------------------------------------------------- */
-
-    const livePrices =
-        data.live_prices ??
-        data.livePrices ??
-        data.ltp_count ??
-        0;
-
-    setText(
-        "livePrices",
-        formatInteger(livePrices)
-    );
-
-
-    /* -----------------------------------------------------
-       MARKET STATUS
-       ----------------------------------------------------- */
-
-    let marketStatus =
-        data.market_status ??
-        data.marketStatus ??
-        data.status ??
-        "UNKNOWN";
-
-    marketStatus =
-        String(marketStatus);
-
-    setText(
-        "marketStatus",
-        marketStatus
-    );
-
-
-    /* -----------------------------------------------------
-       HISTORY
-       ----------------------------------------------------- */
-
-    const historyLoaded =
-        data.history_loaded ??
-        data.historyLoaded ??
-        0;
-
-    const historyFailed =
-        data.history_failed ??
-        data.historyFailed ??
-        0;
-
-    let historyText =
-        `${formatInteger(historyLoaded)} loaded`;
-
-    if (
-        numberValue(historyFailed) > 0
-    ) {
-
-        historyText +=
-            ` • ${formatInteger(historyFailed)} failed`;
-    }
-
-    setText(
-        "historyStatus",
-        historyText
-    );
-
-
-    /* -----------------------------------------------------
-       LAST UPDATE
-       ----------------------------------------------------- */
-
-    const lastUpdate =
-        data.last_history_update ??
-        data.lastHistoryUpdate ??
-        data.last_ltp_update ??
-        data.lastLtpUpdate ??
-        null;
-
-    setText(
-        "lastUpdate",
-        formatDateTime(lastUpdate)
-    );
-
-
-    /* -----------------------------------------------------
-       AUTHENTICATION ERROR
-       ----------------------------------------------------- */
-
-    const authenticated =
-        data.authenticated;
-
-    const lastError =
-        data.last_error ??
-        data.lastError ??
-        data.message ??
-        null;
-
-
-    if (
-        authenticated === false &&
-        lastError
-    ) {
-
-        showError(
-            String(lastError)
-        );
-
-    } else if (
-        marketStatus === "ERROR" &&
-        lastError
-    ) {
-
-        showError(
-            String(lastError)
-        );
-
-    } else {
-
-        showError(null);
-    }
-}
-
-
-/* =========================================================
-   DATE/TIME
-   ========================================================= */
+/* ============================================================
+   DATE / TIME
+============================================================ */
 
 function formatDateTime(value) {
 
-    if (
-        !value ||
-        value === "--"
-    ) {
-        return "--";
+    if (!value) {
+        return "—";
     }
 
-    try {
+    const date =
+        new Date(value);
 
-        const date =
-            new Date(value);
 
-        if (
-            Number.isNaN(
-                date.getTime()
-            )
-        ) {
-            return String(value);
-        }
-
-        return date.toLocaleString(
-            "en-IN",
-            {
-                day: "2-digit",
-                month: "short",
-                hour: "2-digit",
-                minute: "2-digit",
-                second: "2-digit"
-            }
-        );
-
-    } catch (error) {
+    if (
+        Number.isNaN(
+            date.getTime()
+        )
+    ) {
 
         return String(value);
+
     }
+
+
+    return date.toLocaleString(
+        "en-IN",
+        {
+            day: "2-digit",
+            month: "short",
+            hour: "2-digit",
+            minute: "2-digit",
+            second: "2-digit"
+        }
+    );
+
 }
 
 
-/* =========================================================
-   SCANNER DATA
-   ========================================================= */
+/* ============================================================
+   SETTINGS INPUT HELPERS
+============================================================ */
 
-async function loadScanner() {
+function getInputValue(
+    id,
+    fallback
+) {
 
-    if (state.loadingScanner) {
-        return;
+    const element =
+        $(id);
+
+    if (!element) {
+        return fallback;
     }
 
-    state.loadingScanner = true;
+    return element.value;
 
-    try {
+}
 
-        const data =
-            await apiRequest(API.scanner);
 
-        const rows =
-            extractScannerRows(data);
+function getNumberInput(
+    id,
+    fallback
+) {
 
-        state.scanner =
-            rows.map(
-                normalizeScannerRow
-            );
-
-        applyFilters();
-
-        updateSignalCounters();
-
-    } catch (error) {
-
-        console.error(
-            "Scanner error:",
-            error
+    const value =
+        getInputValue(
+            id,
+            fallback
         );
 
-        /*
-           Don't overwrite the existing scanner
-           with an empty result when backend is
-           temporarily unavailable.
-        */
 
-    } finally {
-
-        state.loadingScanner = false;
-    }
-}
+    const number =
+        Number(value);
 
 
-/* =========================================================
-   EXTRACT SCANNER ROWS
-   ========================================================= */
-
-function extractScannerRows(data) {
-
-    if (Array.isArray(data)) {
-        return data;
-    }
-
-    if (!data) {
-        return [];
-    }
-
-    const possibleKeys = [
-        "results",
-        "scanner",
-        "data",
-        "rows",
-        "stocks",
-        "signals",
-        "items"
-    ];
-
-    for (
-        const key of possibleKeys
+    if (
+        !Number.isFinite(
+            number
+        )
     ) {
 
-        if (
-            Array.isArray(data[key])
-        ) {
-            return data[key];
-        }
+        return fallback;
+
     }
 
-    return [];
+
+    return number;
+
 }
 
 
-/* =========================================================
-   NORMALIZE SCANNER ROW
-   ========================================================= */
+function getCheckbox(
+    id,
+    fallback = false
+) {
 
-function normalizeScannerRow(row) {
+    const element =
+        $(id);
 
-    if (!row) {
-        return {};
+    if (!element) {
+        return fallback;
     }
 
-    const signal =
-        row.signal ??
-        row.Signal ??
-        row.action ??
-        row.side ??
-        row.recommendation ??
-        "WAIT";
+    return Boolean(
+        element.checked
+    );
+
+}
+
+
+/* ============================================================
+   READ SETTINGS FROM UI
+============================================================ */
+
+function readSettingsFromUI() {
 
     return {
-        symbol:
-            row.symbol ??
-            row.stock ??
-            row.ticker ??
-            row.name ??
-            "--",
 
-        ltp:
-            row.ltp ??
-            row.price ??
-            row.close ??
-            row.last_price ??
-            0,
+        wave_timeframe:
+            getInputValue(
+                "wave_timeframe",
+                DEFAULT_SETTINGS.wave_timeframe
+            ),
 
-        change:
-            row.change ??
-            row.change_percent ??
-            row.change_pct ??
-            row.pct_change ??
-            0,
+        tide_timeframe:
+            getInputValue(
+                "tide_timeframe",
+                DEFAULT_SETTINGS.tide_timeframe
+            ),
 
-        wave:
-            row.wave ??
-            row.wave_signal ??
-            row.waveSignal ??
-            "--",
 
-        tide:
-            row.tide ??
-            row.tide_signal ??
-            row.tideSignal ??
-            "--",
+        wave_ema_fast:
+            getNumberInput(
+                "wave_ema_fast",
+                9
+            ),
 
-        ema:
-            row.ema ??
-            row.ema_signal ??
-            row.emaSignal ??
-            "--",
+        wave_ema_medium:
+            getNumberInput(
+                "wave_ema_medium",
+                20
+            ),
 
-        rsi:
-            row.rsi ??
-            row.RSI ??
-            0,
+        wave_ema_slow:
+            getNumberInput(
+                "wave_ema_slow",
+                50
+            ),
 
-        macd:
-            row.macd ??
-            row.MACD ??
-            "--",
 
-        volume:
-            row.volume ??
-            row.volume_status ??
-            row.volume_signal ??
-            "--",
+        tide_ema_fast:
+            getNumberInput(
+                "tide_ema_fast",
+                9
+            ),
 
-        support:
-            row.support ??
-            row.support_level ??
-            row.supportLevel ??
-            0,
+        tide_ema_medium:
+            getNumberInput(
+                "tide_ema_medium",
+                20
+            ),
 
-        resistance:
-            row.resistance ??
-            row.resistance_level ??
-            row.resistanceLevel ??
-            0,
+        tide_ema_slow:
+            getNumberInput(
+                "tide_ema_slow",
+                50
+            ),
 
-        score:
-            row.score ??
-            row.total_score ??
-            row.totalScore ??
-            0,
 
-        signal:
-            normalizeSignal(signal),
+        filter_ema_fast:
+            getNumberInput(
+                "filter_ema_fast",
+                20
+            ),
 
-        sl:
-            row.sl ??
-            row.stop_loss ??
-            row.stopLoss ??
-            row.stoploss ??
-            0,
+        filter_ema_slow:
+            getNumberInput(
+                "filter_ema_slow",
+                50
+            ),
 
-        target:
-            row.target ??
-            row.take_profit ??
-            row.takeProfit ??
-            0,
 
-        rr:
-            row.rr ??
-            row.risk_reward ??
-            row.riskReward ??
-            0
+        wave_heikin_ashi:
+            getCheckbox(
+                "wave_heikin_ashi",
+                true
+            ),
+
+        tide_heikin_ashi:
+            getCheckbox(
+                "tide_heikin_ashi",
+                true
+            ),
+
+
+        rsi_period:
+            getNumberInput(
+                "rsi_period",
+                14
+            ),
+
+
+        macd_fast:
+            getNumberInput(
+                "macd_fast",
+                12
+            ),
+
+        macd_slow:
+            getNumberInput(
+                "macd_slow",
+                26
+            ),
+
+        macd_signal:
+            getNumberInput(
+                "macd_signal",
+                9
+            ),
+
+
+        stochastic_period:
+            getNumberInput(
+                "stochastic_period",
+                14
+            ),
+
+        stochastic_smooth:
+            getNumberInput(
+                "stochastic_smooth",
+                3
+            ),
+
+
+        volume_sma:
+            getNumberInput(
+                "volume_sma",
+                20
+            ),
+
+
+        sr_lookback:
+            getNumberInput(
+                "sr_lookback",
+                160
+            ),
+
+        pivot:
+            getNumberInput(
+                "pivot",
+                3
+            ),
+
+
+        min_confirmation:
+            getNumberInput(
+                "min_confirmation",
+                7
+            ),
+
+        risk_reward:
+            getNumberInput(
+                "risk_reward",
+                2
+            ),
+
+        buy_score:
+            getNumberInput(
+                "buy_score",
+                70
+            ),
+
+        sell_score:
+            getNumberInput(
+                "sell_score",
+                30
+            )
+
     };
+
 }
 
 
-/* =========================================================
-   SIGNAL NORMALIZATION
-   ========================================================= */
+/* ============================================================
+   PUT SETTINGS INTO UI
+============================================================ */
 
-function normalizeSignal(value) {
-
-    const signal =
-        String(value || "")
-            .trim()
-            .toUpperCase();
-
-    if (
-        signal.includes("BUY") ||
-        signal === "LONG"
-    ) {
-        return "BUY";
-    }
-
-    if (
-        signal.includes("SELL") ||
-        signal === "SHORT"
-    ) {
-        return "SELL";
-    }
-
-    return "WAIT";
-}
-
-
-/* =========================================================
-   FILTERS
-   ========================================================= */
-
-function applyFilters() {
-
-    const filter =
-        state.signalFilter;
-
-    const search =
-        state.searchText
-            .trim()
-            .toUpperCase();
-
-
-    state.filteredScanner =
-        state.scanner.filter(
-            row => {
-
-                const signalMatch =
-                    filter === "ALL" ||
-                    row.signal === filter;
-
-                const symbol =
-                    String(
-                        row.symbol || ""
-                    ).toUpperCase();
-
-                const searchMatch =
-                    !search ||
-                    symbol.includes(search);
-
-                return (
-                    signalMatch &&
-                    searchMatch
-                );
-            }
-        );
-
-
-    renderScanner();
-}
-
-
-/* =========================================================
-   SCANNER TABLE
-   ========================================================= */
-
-function renderScanner() {
-
-    const body =
-        $("scannerBody");
-
-    if (!body) {
-        return;
-    }
-
-
-    if (
-        state.filteredScanner.length === 0
-    ) {
-
-        body.innerHTML = `
-            <tr>
-                <td
-                    colspan="17"
-                    class="empty-state"
-                >
-                    <div class="empty-icon">
-                        📊
-                    </div>
-
-                    <div>
-                        ${
-                            state.scanner.length === 0
-                                ? "Waiting for scanner data..."
-                                : "No stocks match the selected filter."
-                        }
-                    </div>
-                </td>
-            </tr>
-        `;
-
-        return;
-    }
-
-
-    body.innerHTML =
-        state.filteredScanner
-            .map(
-                (row, index) =>
-                    createScannerRow(
-                        row,
-                        index + 1
-                    )
-            )
-            .join("");
-}
-
-
-/* =========================================================
-   TABLE ROW
-   ========================================================= */
-
-function createScannerRow(
-    row,
-    index
+function applySettingsToUI(
+    settings
 ) {
 
-    const signalClass =
-        getSignalClass(
-            row.signal
-        );
+    const merged = {
+
+        ...DEFAULT_SETTINGS,
+
+        ...(settings || {})
+
+    };
 
 
-    const change =
-        numberValue(
-            row.change,
-            NaN
-        );
+    state.settings =
+        merged;
 
 
-    const changeClass =
-        Number.isFinite(change)
-            ? (
-                change > 0
-                    ? "positive"
-                    : change < 0
-                        ? "negative"
-                        : ""
-            )
-            : "";
+    const selectIds = [
 
-
-    return `
-        <tr>
-
-            <td>
-                ${index}
-            </td>
-
-            <td>
-                <span class="symbol">
-                    ${escapeHTML(row.symbol)}
-                </span>
-            </td>
-
-            <td>
-                ${formatPrice(row.ltp)}
-            </td>
-
-            <td class="${changeClass}">
-                ${
-                    Number.isFinite(change)
-                        ? `${change > 0 ? "+" : ""}${formatNumber(change, 2)}%`
-                        : "--"
-                }
-            </td>
-
-            <td>
-                ${signalText(row.wave)}
-            </td>
-
-            <td>
-                ${signalText(row.tide)}
-            </td>
-
-            <td>
-                ${signalText(row.ema)}
-            </td>
-
-            <td>
-                ${formatNumber(row.rsi, 1)}
-            </td>
-
-            <td>
-                ${formatIndicator(row.macd)}
-            </td>
-
-            <td>
-                ${formatIndicator(row.volume)}
-            </td>
-
-            <td>
-                ${formatPrice(row.support)}
-            </td>
-
-            <td>
-                ${formatPrice(row.resistance)}
-            </td>
-
-            <td>
-                <span class="score">
-                    ${formatNumber(row.score, 0)}
-                </span>
-            </td>
-
-            <td>
-                <span class="signal-badge ${signalClass}">
-                    ${escapeHTML(row.signal)}
-                </span>
-            </td>
-
-            <td>
-                ${formatPrice(row.sl)}
-            </td>
-
-            <td>
-                ${formatPrice(row.target)}
-            </td>
-
-            <td>
-                ${
-                    numberValue(row.rr, NaN) !==
-                    NaN
-                        ? formatNumber(row.rr, 2)
-                        : "--"
-                }
-            </td>
-
-        </tr>
-    `;
-}
-
-
-/* =========================================================
-   SIGNAL CLASS
-   ========================================================= */
-
-function getSignalClass(signal) {
-
-    if (signal === "BUY") {
-        return "signal-buy";
-    }
-
-    if (signal === "SELL") {
-        return "signal-sell";
-    }
-
-    return "signal-wait";
-}
-
-
-/* =========================================================
-   SIGNAL TEXT
-   ========================================================= */
-
-function signalText(value) {
-
-    if (
-        value === null ||
-        value === undefined ||
-        value === ""
-    ) {
-        return "--";
-    }
-
-    const text =
-        String(value)
-            .toUpperCase();
-
-    if (
-        text === "BUY" ||
-        text === "BULLISH"
-    ) {
-
-        return `
-            <span class="positive">
-                ${escapeHTML(text)}
-            </span>
-        `;
-    }
-
-    if (
-        text === "SELL" ||
-        text === "BEARISH"
-    ) {
-
-        return `
-            <span class="negative">
-                ${escapeHTML(text)}
-            </span>
-        `;
-    }
-
-    return escapeHTML(
-        String(value)
-    );
-}
-
-
-/* =========================================================
-   INDICATOR TEXT
-   ========================================================= */
-
-function formatIndicator(value) {
-
-    if (
-        value === null ||
-        value === undefined ||
-        value === ""
-    ) {
-        return "--";
-    }
-
-    if (
-        typeof value === "number"
-    ) {
-        return formatNumber(
-            value,
-            2
-        );
-    }
-
-    return escapeHTML(
-        String(value)
-    );
-}
-
-
-/* =========================================================
-   SIGNAL COUNTERS
-   ========================================================= */
-
-function updateSignalCounters() {
-
-    let buy = 0;
-    let sell = 0;
-    let wait = 0;
-
-
-    for (
-        const row of state.scanner
-    ) {
-
-        if (row.signal === "BUY") {
-            buy++;
-        } else if (
-            row.signal === "SELL"
-        ) {
-            sell++;
-        } else {
-            wait++;
-        }
-    }
-
-
-    setText(
-        "buySignals",
-        formatInteger(buy)
-    );
-
-    setText(
-        "sellSignals",
-        formatInteger(sell)
-    );
-
-    setText(
-        "waitSignals",
-        formatInteger(wait)
-    );
-}
-
-
-/* =========================================================
-   SETTINGS
-   ========================================================= */
-
-const SETTING_FIELDS = {
-
-    entryTimeframe: [
-        "entry_timeframe",
-        "entryTimeframe"
-    ],
-
-    waveTimeframe: [
         "wave_timeframe",
-        "waveTimeframe"
-    ],
+        "tide_timeframe"
 
-    tideTimeframe: [
-        "tide_timeframe",
-        "tideTimeframe"
-    ],
-
-    emaFast: [
-        "ema_fast",
-        "emaFast"
-    ],
-
-    emaMedium: [
-        "ema_medium",
-        "emaMedium"
-    ],
-
-    emaSlow: [
-        "ema_slow",
-        "emaSlow"
-    ],
-
-    rsiPeriod: [
-        "rsi_period",
-        "rsiPeriod"
-    ],
-
-    macdFast: [
-        "macd_fast",
-        "macdFast"
-    ],
-
-    macdSlow: [
-        "macd_slow",
-        "macdSlow"
-    ],
-
-    macdSignal: [
-        "macd_signal",
-        "macdSignal"
-    ],
-
-    stochasticPeriod: [
-        "stochastic_period",
-        "stochasticPeriod"
-    ],
-
-    stochasticSmooth: [
-        "stochastic_smooth",
-        "stochasticSmooth"
-    ],
-
-    volumeSma: [
-        "volume_sma",
-        "volumeSma"
-    ],
-
-    srLookback: [
-        "sr_lookback",
-        "srLookback"
-    ],
-
-    pivot: [
-        "pivot",
-        "pivot_points"
-    ],
-
-    minConfirmation: [
-        "min_confirmation",
-        "minConfirmation"
-    ],
-
-    riskReward: [
-        "risk_reward",
-        "riskReward"
-    ],
-
-    buyScore: [
-        "buy_score",
-        "buyScore"
-    ],
-
-    sellScore: [
-        "sell_score",
-        "sellScore"
-    ]
-};
+    ];
 
 
-/* =========================================================
-   FIND SETTING VALUE
-   ========================================================= */
+    selectIds.forEach(
+        id => {
 
-function findSetting(
-    data,
-    keys
-) {
+            const element =
+                $(id);
 
-    if (!data) {
-        return undefined;
-    }
+            if (!element) {
+                return;
+            }
 
-    for (
-        const key of keys
-    ) {
+            if (
+                merged[id] !==
+                undefined
+            ) {
 
-        if (
-            data[key] !== undefined &&
-            data[key] !== null
-        ) {
-            return data[key];
+                element.value =
+                    merged[id];
+
+            }
+
         }
-    }
+    );
 
-    return undefined;
+
+    const numberIds = [
+
+        "wave_ema_fast",
+        "wave_ema_medium",
+        "wave_ema_slow",
+
+        "tide_ema_fast",
+        "tide_ema_medium",
+        "tide_ema_slow",
+
+        "filter_ema_fast",
+        "filter_ema_slow",
+
+        "rsi_period",
+
+        "macd_fast",
+        "macd_slow",
+        "macd_signal",
+
+        "stochastic_period",
+        "stochastic_smooth",
+
+        "volume_sma",
+
+        "sr_lookback",
+        "pivot",
+
+        "min_confirmation",
+        "risk_reward",
+
+        "buy_score",
+        "sell_score"
+
+    ];
+
+
+    numberIds.forEach(
+        id => {
+
+            const element =
+                $(id);
+
+            if (!element) {
+                return;
+            }
+
+            if (
+                merged[id] !==
+                undefined
+            ) {
+
+                element.value =
+                    merged[id];
+
+            }
+
+        }
+    );
+
+
+    const checkboxIds = [
+
+        "wave_heikin_ashi",
+        "tide_heikin_ashi"
+
+    ];
+
+
+    checkboxIds.forEach(
+        id => {
+
+            const element =
+                $(id);
+
+            if (!element) {
+                return;
+            }
+
+            element.checked =
+                Boolean(
+                    merged[id]
+                );
+
+        }
+    );
+
+
+    updateStrategyBadges();
+
 }
 
 
-/* =========================================================
+/* ============================================================
    LOAD SETTINGS
-   ========================================================= */
+============================================================ */
 
 async function loadSettings() {
 
@@ -1312,165 +1265,286 @@ async function loadSettings() {
 
         const data =
             await apiRequest(
-                API.settings
+                API.SETTINGS
             );
 
-        const settings =
-            data.settings ??
-            data.data ??
+
+        let settings =
             data;
 
-        state.settings =
-            settings || {};
 
-        populateSettings(
-            state.settings
+        if (
+            data &&
+            data.settings
+        ) {
+
+            settings =
+                data.settings;
+
+        }
+
+
+        applySettingsToUI(
+            settings
         );
+
 
     } catch (error) {
 
         console.warn(
-            "Settings could not be loaded:",
+            "Settings load failed:",
             error
         );
 
-        /*
-           Keep the HTML defaults if backend
-           settings aren't available.
-        */
+
+        applySettingsToUI(
+            DEFAULT_SETTINGS
+        );
+
     }
+
 }
 
 
-/* =========================================================
-   POPULATE SETTINGS
-   ========================================================= */
-
-function populateSettings(
-    settings
-) {
-
-    for (
-        const [
-            elementId,
-            keys
-        ] of Object.entries(
-            SETTING_FIELDS
-        )
-    ) {
-
-        const value =
-            findSetting(
-                settings,
-                keys
-            );
-
-        if (
-            value === undefined
-        ) {
-            continue;
-        }
-
-        const element =
-            $(elementId);
-
-        if (!element) {
-            continue;
-        }
-
-        element.value =
-            value;
-    }
-}
-
-
-/* =========================================================
-   COLLECT SETTINGS
-   ========================================================= */
-
-function collectSettings() {
-
-    const settings = {};
-
-    for (
-        const [
-            elementId,
-            keys
-        ] of Object.entries(
-            SETTING_FIELDS
-        )
-    ) {
-
-        const element =
-            $(elementId);
-
-        if (!element) {
-            continue;
-        }
-
-        let value =
-            element.value;
-
-
-        if (
-            element.type === "number"
-        ) {
-
-            value =
-                Number(value);
-        }
-
-
-        /*
-           Send the first backend-style
-           snake_case name.
-        */
-
-        settings[keys[0]] =
-            value;
-    }
-
-    return settings;
-}
-
-
-/* =========================================================
+/* ============================================================
    APPLY SETTINGS
-   ========================================================= */
+============================================================ */
 
 async function applySettings() {
+
+    if (
+        state.loadingSettings
+    ) {
+
+        return;
+
+    }
+
+
+    state.loadingSettings =
+        true;
+
 
     const button =
         $("applySettings");
 
-    const message =
-        $("settingsMessage");
 
-
-    const settings =
-        collectSettings();
+    const originalText =
+        button
+            ? button.textContent
+            : "";
 
 
     if (button) {
 
-        button.disabled = true;
+        button.disabled =
+            true;
 
         button.textContent =
-            "Saving...";
-    }
+            "Applying...";
 
-
-    if (message) {
-
-        message.textContent =
-            "Applying settings...";
     }
 
 
     try {
 
+        const settings =
+            readSettingsFromUI();
+
+
+        validateSettings(
+            settings
+        );
+
+
+        const data =
+            await apiRequest(
+                API.SETTINGS,
+                {
+                    method: "POST",
+
+                    headers: {
+                        "Content-Type":
+                            "application/json"
+                    },
+
+                    body:
+                        JSON.stringify(
+                            settings
+                        )
+                }
+            );
+
+
+        const returnedSettings =
+            data?.settings ||
+            settings;
+
+
+        applySettingsToUI(
+            returnedSettings
+        );
+
+
+        showToast(
+            "Strategy settings applied successfully.",
+            "success"
+        );
+
+
+        await loadStatus();
+
+        await loadScanner();
+
+
+    } catch (error) {
+
+        showToast(
+            error.message ||
+            "Unable to apply settings.",
+            "error"
+        );
+
+    } finally {
+
+        state.loadingSettings =
+            false;
+
+
+        if (button) {
+
+            button.disabled =
+                false;
+
+            button.textContent =
+                originalText ||
+                "✓ Apply Settings";
+
+        }
+
+    }
+
+}
+
+
+/* ============================================================
+   SETTINGS VALIDATION
+============================================================ */
+
+function validateSettings(
+    settings
+) {
+
+    const positiveFields = [
+
+        "wave_ema_fast",
+        "wave_ema_medium",
+        "wave_ema_slow",
+
+        "tide_ema_fast",
+        "tide_ema_medium",
+        "tide_ema_slow",
+
+        "filter_ema_fast",
+        "filter_ema_slow",
+
+        "rsi_period",
+
+        "macd_fast",
+        "macd_slow",
+        "macd_signal",
+
+        "stochastic_period",
+        "stochastic_smooth",
+
+        "volume_sma",
+
+        "sr_lookback",
+        "pivot",
+
+        "min_confirmation",
+
+        "risk_reward"
+
+    ];
+
+
+    for (
+        const field of positiveFields
+    ) {
+
+        const value =
+            Number(
+                settings[field]
+            );
+
+
+        if (
+            !Number.isFinite(value) ||
+            value <= 0
+        ) {
+
+            throw new Error(
+                `${field} must be greater than 0.`
+            );
+
+        }
+
+    }
+
+
+    if (
+        settings.buy_score < 1 ||
+        settings.buy_score > 100
+    ) {
+
+        throw new Error(
+            "BUY Score must be between 1 and 100."
+        );
+
+    }
+
+
+    if (
+        settings.sell_score < 1 ||
+        settings.sell_score > 100
+    ) {
+
+        throw new Error(
+            "SELL Score must be between 1 and 100."
+        );
+
+    }
+
+
+    if (
+        settings.risk_reward < 0.5
+    ) {
+
+        throw new Error(
+            "Risk / Reward must be at least 0.5."
+        );
+
+    }
+
+}
+
+
+/* ============================================================
+   RESET SETTINGS
+============================================================ */
+
+async function resetSettings() {
+
+    applySettingsToUI(
+        DEFAULT_SETTINGS
+    );
+
+
+    try {
+
         await apiRequest(
-            API.settings,
+            API.SETTINGS,
             {
                 method: "POST",
 
@@ -1481,399 +1555,1466 @@ async function applySettings() {
 
                 body:
                     JSON.stringify(
-                        settings
+                        DEFAULT_SETTINGS
                     )
             }
         );
 
 
-        state.settings =
-            settings;
-
-
-        if (message) {
-
-            message.textContent =
-                "✓ Settings applied";
-        }
-
-
-        /*
-           Give backend a moment to recalculate.
-        */
-
-        setTimeout(
-            loadScanner,
-            500
+        showToast(
+            "Settings reset to default.",
+            "success"
         );
 
 
-        setTimeout(
-            () => {
-
-                if (message) {
-                    message.textContent = "";
-                }
-
-            },
-            3000
-        );
+        await loadScanner();
 
 
     } catch (error) {
 
-        console.error(
-            "Settings save error:",
-            error
+        showToast(
+            error.message ||
+            "Unable to reset settings.",
+            "error"
         );
 
-
-        if (message) {
-
-            message.textContent =
-                `Error: ${error.message}`;
-        }
-
-    } finally {
-
-        if (button) {
-
-            button.disabled = false;
-
-            button.textContent =
-                "Apply Settings";
-        }
     }
+
 }
 
 
-/* =========================================================
-   RESET SETTINGS
-   ========================================================= */
+/* ============================================================
+   STRATEGY BADGES
+============================================================ */
 
-async function resetSettings() {
+function updateStrategyBadges() {
 
-    const button =
-        $("resetSettings");
-
-    const message =
-        $("settingsMessage");
+    const settings =
+        state.settings ||
+        DEFAULT_SETTINGS;
 
 
-    if (button) {
+    setText(
+        "waveBadge",
+        timeframeLabel(
+            settings.wave_timeframe
+        )
+    );
 
-        button.disabled = true;
 
-        button.textContent =
-            "Resetting...";
+    setText(
+        "tideBadge",
+        timeframeLabel(
+            settings.tide_timeframe
+        )
+    );
+
+
+    const badges =
+        document.querySelectorAll(
+            ".strategy-badge"
+        );
+
+
+    if (!badges.length) {
+        return;
     }
+
+
+    /*
+       Keep the visible strategy bar synchronized
+       with the actual settings.
+    */
+
+    const waveEma =
+        document.querySelector(
+            ".strategy-badge:nth-child(3) strong"
+        );
+
+
+    if (waveEma) {
+
+        waveEma.textContent =
+            `${settings.wave_ema_fast} / ${settings.wave_ema_medium} / ${settings.wave_ema_slow}`;
+
+    }
+
+
+    const tideEma =
+        document.querySelector(
+            ".strategy-badge:nth-child(4) strong"
+        );
+
+
+    if (tideEma) {
+
+        tideEma.textContent =
+            `${settings.tide_ema_fast} / ${settings.tide_ema_medium} / ${settings.tide_ema_slow}`;
+
+    }
+
+
+    const filter =
+        document.querySelector(
+            ".strategy-badge:nth-child(5) strong"
+        );
+
+
+    if (filter) {
+
+        filter.textContent =
+            `${settings.filter_ema_fast} / ${settings.filter_ema_slow}`;
+
+    }
+
+
+    const rr =
+        document.querySelector(
+            ".strategy-badge:nth-child(6) strong"
+        );
+
+
+    if (rr) {
+
+        rr.textContent =
+            `1 : ${settings.risk_reward}`;
+
+    }
+
+}
+
+
+/* ============================================================
+   LOAD SCANNER
+============================================================ */
+
+async function loadScanner() {
+
+    if (
+        state.loadingScanner
+    ) {
+
+        return;
+
+    }
+
+
+    state.loadingScanner =
+        true;
 
 
     try {
 
-        /*
-           Try backend reset first.
-        */
-
-        let data = null;
-
-        try {
-
-            data =
-                await apiRequest(
-                    API.reset,
-                    {
-                        method: "POST"
-                    }
-                );
-
-        } catch (resetError) {
-
-            /*
-               If backend doesn't expose reset,
-               simply reload defaults from settings.
-            */
-
-            console.warn(
-                "Backend reset unavailable:",
-                resetError
+        const data =
+            await apiRequest(
+                API.SCANNER
             );
-        }
+
+
+        let rows = [];
 
 
         if (
-            data &&
-            (
-                data.settings ||
-                data.data
+            Array.isArray(data)
+        ) {
+
+            rows =
+                data;
+
+        } else if (
+            Array.isArray(
+                data?.results
             )
         ) {
 
-            populateSettings(
-                data.settings ||
-                data.data
+            rows =
+                data.results;
+
+        } else if (
+            Array.isArray(
+                data?.scanner
+            )
+        ) {
+
+            rows =
+                data.scanner;
+
+        } else if (
+            Array.isArray(
+                data?.data
+            )
+        ) {
+
+            rows =
+                data.data;
+
+        }
+
+
+        state.scannerRows =
+            rows.map(
+                normalizeRow
+            );
+
+
+        state.lastScannerUpdate =
+            new Date();
+
+
+        state.scannerLoaded =
+            true;
+
+
+        updateSummaryCards(
+            state.scannerRows
+        );
+
+
+        filterAndRender();
+
+
+        const lastUpdate =
+            state.lastStatus?.last_ltp_update ||
+            state.lastStatus?.last_history_update;
+
+
+        if (lastUpdate) {
+
+            setText(
+                "lastUpdate",
+                `Last update: ${formatDateTime(lastUpdate)}`
             );
 
         } else {
 
-            await loadSettings();
+            setText(
+                "lastUpdate",
+                `Last update: ${formatDateTime(new Date())}`
+            );
+
         }
-
-
-        if (message) {
-
-            message.textContent =
-                "✓ Settings reset";
-        }
-
-
-        setTimeout(
-            () => {
-
-                if (message) {
-                    message.textContent = "";
-                }
-
-            },
-            2500
-        );
 
 
     } catch (error) {
 
-        console.error(
-            "Reset error:",
+        console.warn(
+            "Scanner load failed:",
             error
         );
 
 
-        if (message) {
+        if (
+            !state.scannerLoaded
+        ) {
 
-            message.textContent =
-                `Error: ${error.message}`;
+            renderEmptyState(
+                "Waiting for scanner data..."
+            );
+
         }
 
     } finally {
 
-        if (button) {
+        state.loadingScanner =
+            false;
 
-            button.disabled = false;
-
-            button.textContent =
-                "Reset";
-        }
     }
+
 }
 
 
-/* =========================================================
-   EVENT LISTENERS
-   ========================================================= */
+/* ============================================================
+   NORMALIZE SCANNER ROW
+============================================================ */
 
-function setupEvents() {
+function normalizeRow(row) {
 
+    if (
+        !row ||
+        typeof row !== "object"
+    ) {
 
-    /* -----------------------------------------------------
-       SIGNAL FILTER
-       ----------------------------------------------------- */
+        return {
 
-    const signalFilter =
-        $("signalFilter");
+            symbol: "UNKNOWN",
+            signal: "WAIT"
 
-    if (signalFilter) {
+        };
 
-        signalFilter.addEventListener(
-            "change",
-            event => {
-
-                state.signalFilter =
-                    event.target.value;
-
-                applyFilters();
-            }
-        );
     }
 
 
-    /* -----------------------------------------------------
-       STOCK SEARCH
-       ----------------------------------------------------- */
+    const signal =
+        normalizeSignal(
+            row.signal ??
+            row.action ??
+            row.side ??
+            row.direction
+        );
+
+
+    const wave =
+        normalizeDirection(
+            row.wave ??
+            row.wave_signal ??
+            row.wave_direction
+        );
+
+
+    const tide =
+        normalizeDirection(
+            row.tide ??
+            row.tide_signal ??
+            row.tide_direction
+        );
+
+
+    const filter =
+        normalizeDirection(
+            row.filter ??
+            row.ema_signal ??
+            row.filter_signal ??
+            row.ema
+        );
+
+
+    return {
+
+        ...row,
+
+        symbol:
+            row.symbol ??
+            row.stock ??
+            row.trading_symbol ??
+            row.name ??
+            "—",
+
+        price:
+            numberValue(
+                row.price ??
+                row.ltp ??
+                row.last_price
+            ),
+
+        change:
+            numberValue(
+                row.change ??
+                row.change_percent ??
+                row.change_pct
+            ),
+
+        change_percent:
+            numberValue(
+                row.change_percent ??
+                row.change_pct ??
+                row.change
+            ),
+
+        wave,
+
+        tide,
+
+        filter,
+
+        signal,
+
+        score:
+            numberValue(
+                row.score ??
+                row.total_score
+            ),
+
+        buy_score:
+            numberValue(
+                row.buy_score
+            ),
+
+        sell_score:
+            numberValue(
+                row.sell_score
+            ),
+
+        rsi:
+            numberValue(
+                row.rsi
+            ),
+
+        macd:
+            numberValue(
+                row.macd
+            ),
+
+        macd_signal:
+            numberValue(
+                row.macd_signal
+            ),
+
+        macd_hist:
+            numberValue(
+                row.macd_hist
+            ),
+
+        stoch_k:
+            numberValue(
+                row.stoch_k ??
+                row.stochastic_k
+            ),
+
+        stoch_d:
+            numberValue(
+                row.stoch_d ??
+                row.stochastic_d
+            ),
+
+        volume:
+            numberValue(
+                row.volume
+            ),
+
+        volume_sma:
+            numberValue(
+                row.volume_sma
+            ),
+
+        support:
+            numberValue(
+                row.support
+            ),
+
+        resistance:
+            numberValue(
+                row.resistance
+            ),
+
+        sl:
+            numberValue(
+                row.sl ??
+                row.stop_loss
+            ),
+
+        target:
+            numberValue(
+                row.target ??
+                row.take_profit
+            ),
+
+        rr:
+            numberValue(
+                row.rr ??
+                row.risk_reward
+            ),
+
+        confirmation:
+            numberValue(
+                row.confirmation
+            ),
+
+        wave_ha:
+            normalizeHA(
+                row.wave_heikin_ashi ??
+                row.wave_ha
+            ),
+
+        tide_ha:
+            normalizeHA(
+                row.tide_heikin_ashi ??
+                row.tide_ha
+            )
+
+    };
+
+}
+
+
+/* ============================================================
+   HEIKIN ASHI NORMALIZATION
+============================================================ */
+
+function normalizeHA(value) {
+
+    if (
+        value === null ||
+        value === undefined
+    ) {
+
+        return "NEUTRAL";
+
+    }
+
+
+    const text =
+        String(value)
+            .trim()
+            .toUpperCase();
+
+
+    if (
+        text.includes("BULL")
+    ) {
+
+        return "BULLISH";
+
+    }
+
+
+    if (
+        text.includes("BEAR")
+    ) {
+
+        return "BEARISH";
+
+    }
+
+
+    return "NEUTRAL";
+
+}
+
+
+/* ============================================================
+   SUMMARY CARDS
+============================================================ */
+
+function updateSummaryCards(
+    rows
+) {
+
+    let buy = 0;
+    let sell = 0;
+    let wait = 0;
+
+
+    rows.forEach(
+        row => {
+
+            if (
+                row.signal === "BUY"
+            ) {
+
+                buy++;
+
+            } else if (
+                row.signal === "SELL"
+            ) {
+
+                sell++;
+
+            } else {
+
+                wait++;
+
+            }
+
+        }
+    );
+
+
+    setText(
+        "buyCount",
+        formatInteger(buy)
+    );
+
+
+    setText(
+        "sellCount",
+        formatInteger(sell)
+    );
+
+
+    setText(
+        "waitCount",
+        formatInteger(wait)
+    );
+
+
+    if (
+        rows.length > 0
+    ) {
+
+        setText(
+            "fnoStocks",
+            formatInteger(
+                rows.length
+            )
+        );
+
+    }
+
+}
+
+
+/* ============================================================
+   FILTER
+============================================================ */
+
+function filterAndRender() {
+
+    const search =
+        state.search
+            .trim()
+            .toUpperCase();
+
+
+    const signal =
+        state.signalFilter;
+
+
+    const rows =
+        state.scannerRows.filter(
+            row => {
+
+                const symbol =
+                    String(
+                        row.symbol ||
+                        ""
+                    ).toUpperCase();
+
+
+                const signalMatch =
+                    signal === "ALL" ||
+                    row.signal === signal;
+
+
+                const searchMatch =
+                    !search ||
+                    symbol.includes(
+                        search
+                    );
+
+
+                return (
+                    signalMatch &&
+                    searchMatch
+                );
+
+            }
+        );
+
+
+    state.filteredRows =
+        rows;
+
+
+    renderScannerTable(
+        rows
+    );
+
+}
+
+
+/* ============================================================
+   RENDER TABLE
+============================================================ */
+
+function renderScannerTable(
+    rows
+) {
+
+    const body =
+        $("scannerBody");
+
+
+    if (!body) {
+        return;
+    }
+
+
+    if (
+        !rows ||
+        !rows.length
+    ) {
+
+        renderEmptyState(
+            state.scannerLoaded
+                ? "No matching stocks found."
+                : "Loading scanner..."
+        );
+
+        return;
+
+    }
+
+
+    const fragment =
+        document.createDocumentFragment();
+
+
+    rows.forEach(
+        (row, index) => {
+
+            const tr =
+                document.createElement(
+                    "tr"
+                );
+
+
+            tr.innerHTML =
+                buildRowHTML(
+                    row,
+                    index + 1
+                );
+
+
+            fragment.appendChild(
+                tr
+            );
+
+        }
+    );
+
+
+    body.innerHTML = "";
+
+    body.appendChild(
+        fragment
+    );
+
+}
+
+
+/* ============================================================
+   BUILD TABLE ROW
+============================================================ */
+
+function buildRowHTML(
+    row,
+    index
+) {
+
+    const signal =
+        row.signal;
+
+
+    const signalClass =
+        signal.toLowerCase();
+
+
+    const waveClass =
+        row.wave.toLowerCase();
+
+
+    const tideClass =
+        row.tide.toLowerCase();
+
+
+    const filterClass =
+        row.filter.toLowerCase();
+
+
+    const change =
+        row.change_percent ??
+        row.change;
+
+
+    const changeClass =
+        change > 0
+            ? "positive"
+            : change < 0
+                ? "negative"
+                : "neutral";
+
+
+    const score =
+        row.score !== null
+            ? formatNumber(
+                row.score,
+                0
+            )
+            : "—";
+
+
+    return `
+
+        <td class="rank-cell">
+            ${index}
+        </td>
+
+
+        <td class="symbol-cell">
+
+            <strong>
+                ${escapeHTML(
+                    row.symbol
+                )}
+            </strong>
+
+        </td>
+
+
+        <td class="price-cell">
+
+            ${formatNumber(
+                row.price,
+                2
+            )}
+
+        </td>
+
+
+        <td class="change-cell ${changeClass}">
+
+            ${
+                change !== null
+                    ? (
+                        change > 0
+                            ? "+"
+                            : ""
+                    ) +
+                    formatPercent(change)
+                    : "—"
+            }
+
+        </td>
+
+
+        <td>
+
+            ${directionBadge(
+                row.wave,
+                waveClass
+            )}
+
+        </td>
+
+
+        <td>
+
+            ${directionBadge(
+                row.tide,
+                tideClass
+            )}
+
+        </td>
+
+
+        <td>
+
+            ${directionBadge(
+                row.filter,
+                filterClass
+            )}
+
+        </td>
+
+
+        <td>
+
+            ${emaFilterBadge(
+                row.filter
+            )}
+
+        </td>
+
+
+        <td>
+
+            ${formatNumber(
+                row.rsi,
+                1
+            )}
+
+        </td>
+
+
+        <td class="macd-cell">
+
+            ${formatNumber(
+                row.macd,
+                2
+            )}
+
+        </td>
+
+
+        <td>
+
+            ${formatVolume(
+                row.volume
+            )}
+
+        </td>
+
+
+        <td>
+
+            ${formatNumber(
+                row.support,
+                2
+            )}
+
+        </td>
+
+
+        <td>
+
+            ${formatNumber(
+                row.resistance,
+                2
+            )}
+
+        </td>
+
+
+        <td>
+
+            <span class="score-badge score-${signalClass}">
+                ${score}
+            </span>
+
+        </td>
+
+
+        <td>
+
+            <span class="signal-badge signal-${signalClass}">
+                ${signal}
+            </span>
+
+        </td>
+
+
+        <td class="sl-cell">
+
+            ${formatNumber(
+                row.sl,
+                2
+            )}
+
+        </td>
+
+
+        <td class="target-cell">
+
+            ${formatNumber(
+                row.target,
+                2
+            )}
+
+        </td>
+
+
+        <td>
+
+            ${
+                row.rr !== null
+                    ? `1 : ${formatNumber(
+                        row.rr,
+                        1
+                    )}`
+                    : "—"
+            }
+
+        </td>
+
+    `;
+
+}
+
+
+/* ============================================================
+   DIRECTION BADGE
+============================================================ */
+
+function directionBadge(
+    value,
+    className
+) {
+
+    const signal =
+        normalizeSignal(
+            value
+        );
+
+
+    if (
+        signal === "BUY"
+    ) {
+
+        return `
+            <span class="direction-badge buy">
+                ▲ BUY
+            </span>
+        `;
+
+    }
+
+
+    if (
+        signal === "SELL"
+    ) {
+
+        return `
+            <span class="direction-badge sell">
+                ▼ SELL
+            </span>
+        `;
+
+    }
+
+
+    return `
+        <span class="direction-badge wait">
+            — WAIT
+        </span>
+    `;
+
+}
+
+
+/* ============================================================
+   EMA FILTER BADGE
+============================================================ */
+
+function emaFilterBadge(
+    value
+) {
+
+    const signal =
+        normalizeSignal(
+            value
+        );
+
+
+    if (
+        signal === "BUY"
+    ) {
+
+        return `
+            <span class="mini-badge bullish">
+                BULLISH
+            </span>
+        `;
+
+    }
+
+
+    if (
+        signal === "SELL"
+    ) {
+
+        return `
+            <span class="mini-badge bearish">
+                BEARISH
+            </span>
+        `;
+
+    }
+
+
+    return `
+        <span class="mini-badge neutral">
+            NEUTRAL
+        </span>
+    `;
+
+}
+
+
+/* ============================================================
+   VOLUME FORMAT
+============================================================ */
+
+function formatVolume(
+    value
+) {
+
+    const n =
+        numberValue(value);
+
+
+    if (n === null) {
+        return "—";
+    }
+
+
+    if (
+        Math.abs(n) >=
+        10000000
+    ) {
+
+        return (
+            n / 10000000
+        ).toFixed(2) + " Cr";
+
+    }
+
+
+    if (
+        Math.abs(n) >=
+        100000
+    ) {
+
+        return (
+            n / 100000
+        ).toFixed(2) + " L";
+
+    }
+
+
+    if (
+        Math.abs(n) >=
+        1000
+    ) {
+
+        return (
+            n / 1000
+        ).toFixed(2) + " K";
+
+    }
+
+
+    return formatInteger(n);
+
+}
+
+
+/* ============================================================
+   EMPTY TABLE
+============================================================ */
+
+function renderEmptyState(
+    message
+) {
+
+    const body =
+        $("scannerBody");
+
+
+    if (!body) {
+        return;
+    }
+
+
+    body.innerHTML = `
+
+        <tr>
+
+            <td
+                colspan="18"
+                class="empty-state"
+            >
+
+                <div class="empty-icon">
+                    📡
+                </div>
+
+                <strong>
+                    ${escapeHTML(
+                        message
+                    )}
+                </strong>
+
+                <span>
+                    Waiting for NSE market data
+                </span>
+
+            </td>
+
+        </tr>
+
+    `;
+
+}
+
+
+/* ============================================================
+   SEARCH
+============================================================ */
+
+function handleSearch(
+    event
+) {
+
+    state.search =
+        event.target.value ||
+        "";
+
+    filterAndRender();
+
+}
+
+
+/* ============================================================
+   SIGNAL FILTER
+============================================================ */
+
+function handleSignalFilter(
+    event
+) {
+
+    state.signalFilter =
+        event.target.value ||
+        "ALL";
+
+    filterAndRender();
+
+}
+
+
+/* ============================================================
+   BUTTON LOADING
+============================================================ */
+
+function setButtonLoading(
+    button,
+    loading,
+    loadingText
+) {
+
+    if (!button) {
+        return;
+    }
+
+
+    if (loading) {
+
+        button.dataset.originalText =
+            button.textContent;
+
+        button.disabled =
+            true;
+
+        button.textContent =
+            loadingText;
+
+    } else {
+
+        button.disabled =
+            false;
+
+        button.textContent =
+            button.dataset.originalText ||
+            button.textContent;
+
+    }
+
+}
+
+
+/* ============================================================
+   RESET API
+============================================================ */
+
+async function resetBackend() {
+
+    try {
+
+        await apiRequest(
+            API.RESET,
+            {
+                method: "POST"
+            }
+        );
+
+        return true;
+
+    } catch (error) {
+
+        console.warn(
+            "Backend reset unavailable:",
+            error
+        );
+
+        return false;
+
+    }
+
+}
+
+
+/* ============================================================
+   EVENT LISTENERS
+============================================================ */
+
+function setupEventListeners() {
+
+    const applyButton =
+        $("applySettings");
+
+
+    if (applyButton) {
+
+        applyButton.addEventListener(
+            "click",
+            applySettings
+        );
+
+    }
+
+
+    const resetButton =
+        $("resetSettings");
+
+
+    if (resetButton) {
+
+        resetButton.addEventListener(
+            "click",
+            async () => {
+
+                setButtonLoading(
+                    resetButton,
+                    true,
+                    "Resetting..."
+                );
+
+
+                try {
+
+                    await resetBackend();
+
+                    await resetSettings();
+
+                } finally {
+
+                    setButtonLoading(
+                        resetButton,
+                        false
+                    );
+
+                }
+
+            }
+        );
+
+    }
+
 
     const search =
         $("stockSearch");
+
 
     if (search) {
 
         search.addEventListener(
             "input",
+            handleSearch
+        );
+
+    }
+
+
+    const filter =
+        $("signalFilter");
+
+
+    if (filter) {
+
+        filter.addEventListener(
+            "change",
+            handleSignalFilter
+        );
+
+    }
+
+
+    /*
+       Allow Enter key from search field
+       without submitting/reloading page.
+    */
+
+    if (search) {
+
+        search.addEventListener(
+            "keydown",
             event => {
 
-                state.searchText =
-                    event.target.value;
+                if (
+                    event.key === "Enter"
+                ) {
 
-                applyFilters();
+                    event.preventDefault();
+
+                }
+
             }
         );
+
     }
 
-
-    /* -----------------------------------------------------
-       APPLY SETTINGS
-       ----------------------------------------------------- */
-
-    const apply =
-        $("applySettings");
-
-    if (apply) {
-
-        apply.addEventListener(
-            "click",
-            applySettings
-        );
-    }
-
-
-    /* -----------------------------------------------------
-       RESET SETTINGS
-       ----------------------------------------------------- */
-
-    const reset =
-        $("resetSettings");
-
-    if (reset) {
-
-        reset.addEventListener(
-            "click",
-            resetSettings
-        );
-    }
 }
 
 
-/* =========================================================
-   AUTO REFRESH
-   ========================================================= */
-
-function startPolling() {
-
-    /*
-       Clear old timers first.
-    */
-
-    if (state.statusTimer) {
-
-        clearInterval(
-            state.statusTimer
-        );
-    }
-
-    if (state.scannerTimer) {
-
-        clearInterval(
-            state.scannerTimer
-        );
-    }
-
-
-    /*
-       STATUS
-    */
-
-    state.statusTimer =
-        setInterval(
-            loadStatus,
-            POLL_INTERVAL
-        );
-
-
-    /*
-       SCANNER
-    */
-
-    state.scannerTimer =
-        setInterval(
-            loadScanner,
-            SCANNER_INTERVAL
-        );
-}
-
-
-/* =========================================================
+/* ============================================================
    INITIALIZATION
-   ========================================================= */
+============================================================ */
 
-async function initializeApp() {
+async function initialize() {
 
     console.log(
-        "Indian F&O Scanner starting..."
+        "Indian F&O Scanner initializing..."
     );
 
 
-    setupEvents();
+    setupEventListeners();
+
+
+    applySettingsToUI(
+        DEFAULT_SETTINGS
+    );
+
+
+    renderEmptyState(
+        "Connecting to scanner..."
+    );
 
 
     /*
-       Initial status.
-    */
-
-    await loadStatus();
-
-
-    /*
-       Load settings.
+       Load settings first so the dashboard
+       displays the backend configuration.
     */
 
     await loadSettings();
 
 
     /*
-       Load scanner.
+       Then load backend status.
+    */
+
+    await loadStatus();
+
+
+    /*
+       Then load scanner.
     */
 
     await loadScanner();
 
 
     /*
-       Start automatic refresh.
+       Start background refresh.
     */
 
-    startPolling();
+    setInterval(
+        async () => {
+
+            await loadStatus();
+
+        },
+        STATUS_INTERVAL
+    );
+
+
+    setInterval(
+        async () => {
+
+            await loadScanner();
+
+        },
+        REFRESH_INTERVAL
+    );
 
 
     console.log(
         "Indian F&O Scanner ready."
     );
+
 }
 
 
-/* =========================================================
-   PAGE VISIBILITY
-   ========================================================= */
-
-document.addEventListener(
-    "visibilitychange",
-    () => {
-
-        /*
-           When user comes back to the tab,
-           immediately refresh the data.
-        */
-
-        if (
-            document.visibilityState ===
-            "visible"
-        ) {
-
-            loadStatus();
-            loadScanner();
-        }
-    }
-);
-
-
-/* =========================================================
+/* ============================================================
    START
-   ========================================================= */
+============================================================ */
 
 if (
     document.readyState ===
@@ -1882,10 +3023,11 @@ if (
 
     document.addEventListener(
         "DOMContentLoaded",
-        initializeApp
+        initialize
     );
 
 } else {
 
-    initializeApp();
+    initialize();
+
 }

@@ -21,7 +21,7 @@ from strategy import DEFAULT_SETTINGS, ScannerEngine
 
 load_dotenv()
 
-app = FastAPI(title="Indian F&O Intraday Scanner", version="2.0.0")
+app = FastAPI(title="Indian F&O Intraday Scanner", version="3.0.0")
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
 engine = ScannerEngine(DEFAULT_SETTINGS.copy())
@@ -63,13 +63,23 @@ def load_universe():
         state["message"] = "growwapi package is not installed."
         return []
 
-    token = os.getenv("GROWW_ACCESS_TOKEN", "").strip()
-    if not token:
-        state["status"] = "demo"
-        state["message"] = "Add GROWW_ACCESS_TOKEN in Render Environment Variables."
+    api_key = os.getenv("GROWW_API_KEY", "").strip()
+    api_secret = os.getenv("GROWW_API_SECRET", "").strip()
+    legacy_token = os.getenv("GROWW_ACCESS_TOKEN", "").strip()
+
+    if not api_key or not api_secret:
+        if legacy_token:
+            state["status"] = "demo"
+            state["message"] = "Legacy GROWW_ACCESS_TOKEN detected. Update to GROWW_API_KEY + GROWW_API_SECRET."
+        else:
+            state["status"] = "demo"
+            state["message"] = "Add GROWW_API_KEY and GROWW_API_SECRET in Render Environment Variables."
         return []
 
     try:
+        # Groww's documented API-key + secret flow creates a session access
+        # token through the SDK. The generated token is kept only in memory.
+        token = GrowwAPI.get_access_token(api_key=api_key, secret=api_secret)
         groww = GrowwAPI(token)
         url = getattr(groww, "INSTRUMENT_CSV_URL", None) or "https://growwapi-assets.groww.in/instruments/instrument.csv"
         df = pd.read_csv(url)

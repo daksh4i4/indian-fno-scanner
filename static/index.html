@@ -1,81 +1,532 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>Indian F&O Intraday Scanner</title>
-  <link rel="stylesheet" href="/static/style.css">
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+    <title>Indian F&O Scanner</title>
+
+    <meta
+        name="description"
+        content="Live NSE F&O stock scanner powered by Groww API"
+    >
+
+    <link rel="stylesheet" href="/static/style.css">
 </head>
+
 <body>
-  <header class="topbar">
-    <div>
-      <h1>🇮🇳 Indian F&O Intraday Scanner</h1>
-      <p>Groww Live Data • NSE F&O • Multi-Timeframe Technical Scanner</p>
-    </div>
-    <div class="status"><span id="dot"></span><span id="status">CONNECTING</span></div>
-  </header>
 
-  <main>
-    <section class="cards">
-      <div class="card"><span>F&O Stocks</span><b id="count">0</b></div>
-      <div class="card"><span>BUY</span><b id="buy">0</b></div>
-      <div class="card"><span>SELL</span><b id="sell">0</b></div>
-      <div class="card"><span>WAIT</span><b id="wait">0</b></div>
-    </section>
+<div class="app">
 
-    <section class="toolbar">
-      <input id="search" placeholder="Search stock...">
-      <button onclick="openSettings()">⚙ Settings</button>
-      <button onclick="refresh()">↻ Refresh</button>
-    </section>
+    <!-- HEADER -->
+    <header class="topbar">
 
-    <section class="panel">
-      <table>
-        <thead>
-          <tr><th>Stock</th><th>LTP</th><th>Change</th><th>Wave</th><th>Tide</th><th>Score</th><th>Conf.</th><th>RSI</th><th>RR</th><th>SL</th><th>Target</th><th>Signal</th></tr>
-        </thead>
-        <tbody id="rows"></tbody>
-      </table>
-    </section>
-  </main>
+        <div class="brand">
+            <div class="brand-icon">🇮🇳</div>
 
-  <div class="modal" id="modal">
-    <div class="modalbox">
-      <div class="modalhead"><h2>Scanner Settings</h2><button onclick="closeSettings()">×</button></div>
-        <label class="toggle-row">Telegram Signals
-          <input id="telegram_enabled" type="checkbox">
-          <span>Allow Telegram BUY/SELL alerts</span>
-        </label>
-      <div class="grid">
-        <label>Wave timeframe<input id="wave_timeframe"></label>
-        <label>Tide timeframe<input id="tide_timeframe"></label>
-        <label>Entry timeframe<input id="entry_timeframe"></label>
-        <label>EMA Fast<input id="ema_fast" type="number"></label>
-        <label>EMA Mid<input id="ema_mid" type="number"></label>
-        <label>EMA Slow<input id="ema_slow" type="number"></label>
-        <label>RSI Length<input id="rsi_length" type="number"></label>
-        <label>RSI Overbought<input id="rsi_overbought" type="number"></label>
-        <label>RSI Oversold<input id="rsi_oversold" type="number"></label>
-        <label>MACD Fast<input id="macd_fast" type="number"></label>
-        <label>MACD Slow<input id="macd_slow" type="number"></label>
-        <label>MACD Signal<input id="macd_signal" type="number"></label>
-        <label>Stoch K<input id="stoch_k" type="number"></label>
-        <label>Stoch D<input id="stoch_d" type="number"></label>
-        <label>Stoch Smooth<input id="stoch_smooth" type="number"></label>
-        <label>Volume SMA<input id="volume_sma" type="number"></label>
-        <label>S/R Lookback<input id="sr_lookback" type="number"></label>
-        <label>Pivot<input id="pivot" type="number"></label>
-        <label>BUY threshold<input id="buy_threshold" type="number"></label>
-        <label>SELL threshold<input id="sell_threshold" type="number"></label>
-        <label>Min confirmation<input id="min_confirmation" type="number"></label>
-        <label>Minimum RR<input id="minimum_rr" type="number" step="0.1"></label>
-      </div>
-      <div class="actions">
-        <button onclick="resetSettings()">Reset</button>
-        <button class="primary" onclick="saveSettings()">Save Settings</button>
-      </div>
-    </div>
-  </div>
-  <script src="/static/app.js"></script>
+            <div>
+                <h1>Indian F&O Scanner</h1>
+                <p>Professional NSE Market Scanner</p>
+            </div>
+        </div>
+
+        <div class="connection-area">
+
+            <div class="connection-status">
+                <span id="statusDot" class="status-dot offline"></span>
+                <span id="statusText">Connecting...</span>
+            </div>
+
+            <div id="lastUpdate" class="last-update">
+                --
+            </div>
+
+        </div>
+
+    </header>
+
+
+    <!-- MAIN -->
+    <main class="container">
+
+        <!-- SUMMARY CARDS -->
+        <section class="summary-grid">
+
+            <div class="summary-card">
+                <div class="summary-label">F&O Stocks</div>
+                <div id="totalStocks" class="summary-value">0</div>
+                <div class="summary-sub">NSE F&O Universe</div>
+            </div>
+
+            <div class="summary-card buy-card">
+                <div class="summary-label">BUY</div>
+                <div id="buyCount" class="summary-value">0</div>
+                <div class="summary-sub">Active signals</div>
+            </div>
+
+            <div class="summary-card sell-card">
+                <div class="summary-label">SELL</div>
+                <div id="sellCount" class="summary-value">0</div>
+                <div class="summary-sub">Active signals</div>
+            </div>
+
+            <div class="summary-card wait-card">
+                <div class="summary-label">WAIT</div>
+                <div id="waitCount" class="summary-value">0</div>
+                <div class="summary-sub">No confirmed signal</div>
+            </div>
+
+        </section>
+
+
+        <!-- DATA STATUS -->
+        <section class="data-status-card">
+
+            <div>
+                <div class="section-title">Market Data</div>
+
+                <div id="historyStatus">
+                    Historical candles loading...
+                </div>
+            </div>
+
+            <div class="data-status-right">
+
+                <div class="mini-status">
+                    <span class="mini-label">Data</span>
+                    <span id="dataStatus">--</span>
+                </div>
+
+                <div class="mini-status">
+                    <span class="mini-label">Stocks</span>
+                    <span id="loadedStocks">0</span>
+                </div>
+
+            </div>
+
+        </section>
+
+
+        <!-- STRATEGY SETTINGS -->
+        <section class="panel">
+
+            <div class="panel-header">
+
+                <div>
+                    <h2>Strategy Settings</h2>
+                    <p>Configure scanner parameters</p>
+                </div>
+
+                <button id="resetSettings" class="secondary-button">
+                    Reset
+                </button>
+
+            </div>
+
+
+            <div class="settings-grid">
+
+                <div class="setting-group">
+                    <label for="entryTimeframe">
+                        Entry Timeframe
+                    </label>
+
+                    <select id="entryTimeframe">
+                        <option value="1m">1 Minute</option>
+                        <option value="2m">2 Minutes</option>
+                        <option value="3m">3 Minutes</option>
+                        <option value="5m" selected>5 Minutes</option>
+                        <option value="10m">10 Minutes</option>
+                        <option value="15m">15 Minutes</option>
+                        <option value="30m">30 Minutes</option>
+                        <option value="1h">1 Hour</option>
+                        <option value="4h">4 Hours</option>
+                        <option value="1d">1 Day</option>
+                        <option value="1w">1 Week</option>
+                    </select>
+                </div>
+
+
+                <div class="setting-group">
+                    <label for="waveTimeframe">
+                        Wave Timeframe
+                    </label>
+
+                    <select id="waveTimeframe">
+                        <option value="1m">1 Minute</option>
+                        <option value="2m">2 Minutes</option>
+                        <option value="3m">3 Minutes</option>
+                        <option value="5m">5 Minutes</option>
+                        <option value="10m">10 Minutes</option>
+                        <option value="15m" selected>15 Minutes</option>
+                        <option value="30m">30 Minutes</option>
+                        <option value="1h">1 Hour</option>
+                        <option value="4h">4 Hours</option>
+                        <option value="1d">1 Day</option>
+                        <option value="1w">1 Week</option>
+                    </select>
+                </div>
+
+
+                <div class="setting-group">
+                    <label for="tideTimeframe">
+                        Tide Timeframe
+                    </label>
+
+                    <select id="tideTimeframe">
+                        <option value="1m">1 Minute</option>
+                        <option value="2m">2 Minutes</option>
+                        <option value="3m">3 Minutes</option>
+                        <option value="5m">5 Minutes</option>
+                        <option value="10m">10 Minutes</option>
+                        <option value="15m">15 Minutes</option>
+                        <option value="30m">30 Minutes</option>
+                        <option value="1h" selected>1 Hour</option>
+                        <option value="4h">4 Hours</option>
+                        <option value="1d">1 Day</option>
+                        <option value="1w">1 Week</option>
+                    </select>
+                </div>
+
+
+                <div class="setting-group">
+                    <label for="emaFast">
+                        EMA Fast
+                    </label>
+
+                    <input
+                        id="emaFast"
+                        type="number"
+                        min="1"
+                        value="9"
+                    >
+                </div>
+
+
+                <div class="setting-group">
+                    <label for="emaMedium">
+                        EMA Medium
+                    </label>
+
+                    <input
+                        id="emaMedium"
+                        type="number"
+                        min="1"
+                        value="20"
+                    >
+                </div>
+
+
+                <div class="setting-group">
+                    <label for="emaSlow">
+                        EMA Slow
+                    </label>
+
+                    <input
+                        id="emaSlow"
+                        type="number"
+                        min="1"
+                        value="50"
+                    >
+                </div>
+
+
+                <div class="setting-group">
+                    <label for="rsiPeriod">
+                        RSI Period
+                    </label>
+
+                    <input
+                        id="rsiPeriod"
+                        type="number"
+                        min="2"
+                        value="14"
+                    >
+                </div>
+
+
+                <div class="setting-group">
+                    <label for="macdFast">
+                        MACD Fast
+                    </label>
+
+                    <input
+                        id="macdFast"
+                        type="number"
+                        min="1"
+                        value="12"
+                    >
+                </div>
+
+
+                <div class="setting-group">
+                    <label for="macdSlow">
+                        MACD Slow
+                    </label>
+
+                    <input
+                        id="macdSlow"
+                        type="number"
+                        min="2"
+                        value="26"
+                    >
+                </div>
+
+
+                <div class="setting-group">
+                    <label for="macdSignal">
+                        MACD Signal
+                    </label>
+
+                    <input
+                        id="macdSignal"
+                        type="number"
+                        min="1"
+                        value="9"
+                    >
+                </div>
+
+
+                <div class="setting-group">
+                    <label for="stochPeriod">
+                        Stochastic Period
+                    </label>
+
+                    <input
+                        id="stochPeriod"
+                        type="number"
+                        min="2"
+                        value="14"
+                    >
+                </div>
+
+
+                <div class="setting-group">
+                    <label for="stochSmooth">
+                        Stochastic Smooth
+                    </label>
+
+                    <input
+                        id="stochSmooth"
+                        type="number"
+                        min="1"
+                        value="3"
+                    >
+                </div>
+
+
+                <div class="setting-group">
+                    <label for="volumePeriod">
+                        Volume SMA
+                    </label>
+
+                    <input
+                        id="volumePeriod"
+                        type="number"
+                        min="1"
+                        value="20"
+                    >
+                </div>
+
+
+                <div class="setting-group">
+                    <label for="srLookback">
+                        S/R Lookback
+                    </label>
+
+                    <input
+                        id="srLookback"
+                        type="number"
+                        min="10"
+                        value="160"
+                    >
+                </div>
+
+
+                <div class="setting-group">
+                    <label for="pivot">
+                        Pivot
+                    </label>
+
+                    <input
+                        id="pivot"
+                        type="number"
+                        min="1"
+                        value="3"
+                    >
+                </div>
+
+
+                <div class="setting-group">
+                    <label for="minConfirmation">
+                        Min Confirmation
+                    </label>
+
+                    <input
+                        id="minConfirmation"
+                        type="number"
+                        min="1"
+                        value="7"
+                    >
+                </div>
+
+
+                <div class="setting-group">
+                    <label for="riskReward">
+                        Risk / Reward
+                    </label>
+
+                    <input
+                        id="riskReward"
+                        type="number"
+                        min="0.5"
+                        step="0.5"
+                        value="2"
+                    >
+                </div>
+
+
+                <div class="setting-group">
+                    <label for="buyThreshold">
+                        BUY Score
+                    </label>
+
+                    <input
+                        id="buyThreshold"
+                        type="number"
+                        min="1"
+                        max="100"
+                        value="70"
+                    >
+                </div>
+
+
+                <div class="setting-group">
+                    <label for="sellThreshold">
+                        SELL Score
+                    </label>
+
+                    <input
+                        id="sellThreshold"
+                        type="number"
+                        min="0"
+                        max="99"
+                        value="30"
+                    >
+                </div>
+
+            </div>
+
+
+            <div class="settings-actions">
+
+                <button id="applySettings" class="primary-button">
+                    Apply Settings
+                </button>
+
+                <span id="settingsMessage"></span>
+
+            </div>
+
+        </section>
+
+
+        <!-- SCANNER TABLE -->
+        <section class="panel">
+
+            <div class="panel-header">
+
+                <div>
+                    <h2>Live F&O Scanner</h2>
+                    <p>
+                        NSE F&O stocks with technical confirmation
+                    </p>
+                </div>
+
+                <div class="table-controls">
+
+                    <select id="signalFilter">
+                        <option value="ALL">All</option>
+                        <option value="BUY">BUY</option>
+                        <option value="SELL">SELL</option>
+                        <option value="WAIT">WAIT</option>
+                    </select>
+
+                    <input
+                        id="searchStock"
+                        type="search"
+                        placeholder="Search stock..."
+                    >
+
+                </div>
+
+            </div>
+
+
+            <div class="table-wrapper">
+
+                <table>
+
+                    <thead>
+
+                        <tr>
+                            <th>#</th>
+                            <th>Stock</th>
+                            <th>LTP</th>
+                            <th>Change</th>
+                            <th>Wave</th>
+                            <th>Tide</th>
+                            <th>EMA</th>
+                            <th>RSI</th>
+                            <th>MACD</th>
+                            <th>Volume</th>
+                            <th>Support</th>
+                            <th>Resistance</th>
+                            <th>Score</th>
+                            <th>Signal</th>
+                            <th>SL</th>
+                            <th>Target</th>
+                            <th>RR</th>
+                        </tr>
+
+                    </thead>
+
+                    <tbody id="scannerBody">
+
+                        <tr>
+                            <td colspan="17" class="empty-state">
+                                Loading scanner data...
+                            </td>
+                        </tr>
+
+                    </tbody>
+
+                </table>
+
+            </div>
+
+        </section>
+
+
+        <!-- FOOTER -->
+        <footer>
+
+            <div>
+                Indian F&O Scanner
+            </div>
+
+            <div>
+                Market analysis tool • No automatic order placement
+            </div>
+
+        </footer>
+
+    </main>
+
+</div>
+
+
+<script src="/static/app.js"></script>
+
 </body>
 </html>

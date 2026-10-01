@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Indian F&O Intraday Scanner</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div>
+      <h1>🇮🇳 Indian F&O Intraday Scanner</h1>
+      <p>Groww Live Data • Delta Strategy Engine</p>
+    </div>
+    <div class="status"><span id="dot"></span><span id="status">CONNECTING</span></div>
+  </header>
+
+  <main>
+    <section class="cards">
+      <div class="card"><span>F&O Stocks</span><b id="count">0</b></div>
+      <div class="card"><span>BUY</span><b id="buy">0</b></div>
+      <div class="card"><span>SELL</span><b id="sell">0</b></div>
+      <div class="card"><span>WAIT</span><b id="wait">0</b></div>
+    </section>
+
+    <section class="toolbar">
+      <input id="search" placeholder="Search stock...">
+      <button onclick="openSettings()">⚙ Settings</button>
+      <button onclick="refresh()">↻ Refresh</button>
+    </section>
+
+    <section class="panel">
+      <table>
+        <thead>
+          <tr><th>Stock</th><th>LTP</th><th>Change</th><th>Wave</th><th>Tide</th><th>Score</th><th>RR</th><th>Signal</th></tr>
+        </thead>
+        <tbody id="rows"></tbody>
+      </table>
+    </section>
+  </main>
+
+  <div class="modal" id="modal">
+    <div class="modalbox">
+      <div class="modalhead"><h2>Scanner Settings</h2><button onclick="closeSettings()">×</button></div>
+      <div class="grid">
+        <label>Wave timeframe<input id="wave_timeframe"></label>
+        <label>Tide timeframe<input id="tide_timeframe"></label>
+        <label>Entry timeframe<input id="entry_timeframe"></label>
+        <label>EMA Fast<input id="ema_fast" type="number"></label>
+        <label>EMA Mid<input id="ema_mid" type="number"></label>
+        <label>EMA Slow<input id="ema_slow" type="number"></label>
+        <label>RSI Length<input id="rsi_length" type="number"></label>
+        <label>RSI Overbought<input id="rsi_overbought" type="number"></label>
+        <label>RSI Oversold<input id="rsi_oversold" type="number"></label>
+        <label>MACD Fast<input id="macd_fast" type="number"></label>
+        <label>MACD Slow<input id="macd_slow" type="number"></label>
+        <label>MACD Signal<input id="macd_signal" type="number"></label>
+        <label>Stoch K<input id="stoch_k" type="number"></label>
+        <label>Stoch D<input id="stoch_d" type="number"></label>
+        <label>Stoch Smooth<input id="stoch_smooth" type="number"></label>
+        <label>Volume SMA<input id="volume_sma" type="number"></label>
+        <label>S/R Lookback<input id="sr_lookback" type="number"></label>
+        <label>Pivot<input id="pivot" type="number"></label>
+        <label>BUY threshold<input id="buy_threshold" type="number"></label>
+        <label>SELL threshold<input id="sell_threshold" type="number"></label>
+        <label>Min confirmation<input id="min_confirmation" type="number"></label>
+        <label>Minimum RR<input id="minimum_rr" type="number" step="0.1"></label>
+      </div>
+      <div class="actions">
+        <button onclick="resetSettings()">Reset</button>
+        <button class="primary" onclick="saveSettings()">Save Settings</button>
+      </div>
+    </div>
+  </div>
+  <script src="/static/app.js"></script>
+</body>
+</html>

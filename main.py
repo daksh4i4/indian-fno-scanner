@@ -17,7 +17,7 @@ from strategy import ScannerEngine, DEFAULT_SETTINGS
 
 
 # ============================================================
-# CONFIG
+# APPLICATION CONFIG
 # ============================================================
 
 load_dotenv()
@@ -28,9 +28,18 @@ GROWW_API_KEY = os.getenv("GROWW_API_KEY", "").strip()
 GROWW_API_SECRET = os.getenv("GROWW_API_SECRET", "").strip()
 
 GROWW_BASE_URL = "https://api.groww.in"
-GROWW_TOKEN_URL = f"{GROWW_BASE_URL}/v1/token/api/access"
-GROWW_HISTORICAL_URL = f"{GROWW_BASE_URL}/v1/historical/candles"
-GROWW_LTP_URL = f"{GROWW_BASE_URL}/v1/live-data/ltp"
+
+GROWW_TOKEN_URL = (
+    f"{GROWW_BASE_URL}/v1/token/api/access"
+)
+
+GROWW_HISTORICAL_URL = (
+    f"{GROWW_BASE_URL}/v1/historical/candles"
+)
+
+GROWW_LTP_URL = (
+    f"{GROWW_BASE_URL}/v1/live-data/ltp"
+)
 
 INSTRUMENT_CSV_URL = (
     "https://growwapi-assets.groww.in/instruments/instrument.csv"
@@ -39,11 +48,13 @@ INSTRUMENT_CSV_URL = (
 HISTORY_REFRESH_SECONDS = 60
 LTP_REFRESH_SECONDS = 5
 
-# We analyze equity/CASH candles for the underlying F&O stocks.
-# The universe itself is restricted to stocks which have NSE F&O contracts.
 HISTORY_SEGMENT = "CASH"
 
-# Maximum safe-ish windows for requesting history.
+
+# ============================================================
+# HISTORY WINDOWS
+# ============================================================
+
 HISTORY_WINDOWS = {
     "1m": 7,
     "2m": 7,
@@ -77,7 +88,7 @@ logger = logging.getLogger(APP_NAME)
 
 app = FastAPI(
     title=APP_NAME,
-    version="4.0",
+    version="4.1",
 )
 
 
@@ -109,21 +120,24 @@ STATE: Dict[str, Any] = {
 
 STATE_LOCK = threading.Lock()
 
+
+# ============================================================
+# GLOBAL DATA
+# ============================================================
+
 INSTRUMENTS_DF: Optional[pd.DataFrame] = None
 
-# symbol -> metadata
 FNO_STOCKS: Dict[str, Dict[str, Any]] = {}
 
-# symbol -> cash groww symbol
 CASH_SYMBOLS: Dict[str, str] = {}
 
-# symbol -> historical dataframe by timeframe
-HISTORY: Dict[str, Dict[str, pd.DataFrame]] = {}
+HISTORY: Dict[
+    str,
+    Dict[str, pd.DataFrame]
+] = {}
 
-# symbol -> latest LTP
 LIVE_LTP: Dict[str, float] = {}
 
-# last history fetch timestamp
 HISTORY_FETCH_TIME: Dict[str, float] = {}
 
 
@@ -155,10 +169,10 @@ GROWW_INTERVALS = {
 }
 
 
-def normalize_timeframe(value: Any, default: str = "5m") -> str:
-    """
-    Normalize dashboard timeframe values.
-    """
+def normalize_timeframe(
+    value: Any,
+    default: str = "5m",
+) -> str:
 
     if value is None:
         return default
@@ -168,60 +182,126 @@ def normalize_timeframe(value: Any, default: str = "5m") -> str:
     aliases = {
         "1min": "1m",
         "1minute": "1m",
+
         "2min": "2m",
         "2minute": "2m",
+
         "3min": "3m",
         "3minute": "3m",
+
         "5min": "5m",
         "5minute": "5m",
+
         "10min": "10m",
         "10minute": "10m",
+
         "15min": "15m",
         "15minute": "15m",
+
         "30min": "30m",
         "30minute": "30m",
+
         "60min": "1h",
         "60minute": "1h",
         "1hour": "1h",
+
         "4hour": "4h",
+
         "1day": "1d",
         "daily": "1d",
+
         "1week": "1w",
         "weekly": "1w",
     }
 
-    return aliases.get(value, value if value in GROWW_INTERVALS else default)
+    return aliases.get(
+        value,
+        value if value in GROWW_INTERVALS else default,
+    )
 
 
 # ============================================================
-# GROWW AUTHENTICATION
+# SAFE HELPERS
+# ============================================================
+
+def safe_number(value: Any) -> Optional[float]:
+
+    try:
+        if pd.isna(value):
+            return None
+    except Exception:
+        pass
+
+    try:
+        return float(value)
+    except Exception:
+        return None
+
+
+def safe_string(value: Any) -> str:
+
+    try:
+        if pd.isna(value):
+            return ""
+    except Exception:
+        pass
+
+    return str(value).strip()
+
+
+# ============================================================
+# GROWW TOKEN GENERATION
 # ============================================================
 
 def generate_access_token() -> str:
     """
-    Generate Groww access token using API key + secret.
+    Generate Groww access token using:
 
-    Groww API Key + Secret approval flow:
-        checksum = SHA256(secret + timestamp)
+        API KEY
+        API SECRET
+        timestamp
+        SHA256(secret + timestamp)
+
+    IMPORTANT:
+    Groww returns the token at the TOP LEVEL:
+
+        {
+            "token": "...",
+            "tokenRefId": "...",
+            "sessionName": "...",
+            "expiry": "...",
+            "active": true
+        }
+
+    Therefore we read data["token"].
     """
 
-    if not GROWW_API_KEY or not GROWW_API_SECRET:
+    if not GROWW_API_KEY:
         raise RuntimeError(
-            "GROWW_API_KEY or GROWW_API_SECRET is missing."
+            "GROWW_API_KEY is missing from Render environment variables."
         )
 
-    timestamp = str(int(time.time()))
+    if not GROWW_API_SECRET:
+        raise RuntimeError(
+            "GROWW_API_SECRET is missing from Render environment variables."
+        )
 
-    checksum_input = (
+    timestamp = str(
+        int(time.time())
+    )
+
+    checksum_string = (
         GROWW_API_SECRET + timestamp
-    ).encode("utf-8")
+    )
 
     checksum = hashlib.sha256(
-        checksum_input
+        checksum_string.encode("utf-8")
     ).hexdigest()
 
     headers = {
-        "Authorization": f"Bearer {GROWW_API_KEY}",
+        "Authorization": (
+            f"Bearer {GROWW_API_KEY}"
+        ),
         "Accept": "application/json",
         "X-API-VERSION": "1.0",
         "Content-Type": "application/json",
@@ -233,57 +313,153 @@ def generate_access_token() -> str:
         "timestamp": timestamp,
     }
 
-    response = requests.post(
-        GROWW_TOKEN_URL,
-        headers=headers,
-        json=payload,
-        timeout=20,
+    logger.info(
+        "Requesting Groww access token..."
     )
 
-    if response.status_code != 200:
+    try:
+
+        response = requests.post(
+            GROWW_TOKEN_URL,
+            headers=headers,
+            json=payload,
+            timeout=20,
+        )
+
+    except requests.RequestException as exc:
+
         raise RuntimeError(
-            f"Groww token HTTP {response.status_code}: "
+            f"Groww token network error: {exc}"
+        ) from exc
+
+    if response.status_code != 200:
+
+        raise RuntimeError(
+            "Groww token HTTP "
+            f"{response.status_code}: "
             f"{response.text[:1000]}"
         )
 
-    data = response.json()
+    try:
 
-    if data.get("status") != "SUCCESS":
+        data = response.json()
+
+    except Exception:
+
         raise RuntimeError(
-            f"Groww token failed: {data}"
+            "Groww token endpoint returned "
+            f"invalid JSON: {response.text[:1000]}"
         )
 
-    payload_data = data.get("payload", {})
-
-    token = (
-        payload_data.get("access_token")
-        or payload_data.get("token")
+    logger.info(
+        "Groww token response received."
     )
 
+    # --------------------------------------------------------
+    # IMPORTANT FIX
+    # --------------------------------------------------------
+    #
+    # Groww returns:
+    #
+    # {
+    #     "token": "...",
+    #     "tokenRefId": "...",
+    #     "sessionName": "...",
+    #     "expiry": "...",
+    #     "active": true
+    # }
+    #
+    # Token is NOT necessarily inside payload.
+    # --------------------------------------------------------
+
+    token = data.get("token")
+
+    # Fallback for alternative response formats.
     if not token:
-        raise RuntimeError(
-            f"Groww token missing in response: {data}"
+
+        payload_data = data.get(
+            "payload"
         )
 
-    with STATE_LOCK:
-        STATE["access_token"] = token
-        STATE["token_created_at"] = datetime.utcnow().isoformat()
-        STATE["authenticated"] = True
-        STATE["last_error"] = None
+        if isinstance(
+            payload_data,
+            dict
+        ):
 
-    logger.info("Groww API authentication successful.")
+            token = (
+                payload_data.get(
+                    "token"
+                )
+                or payload_data.get(
+                    "access_token"
+                )
+            )
+
+    if not token:
+
+        raise RuntimeError(
+            "Groww authentication response "
+            "did not contain a token."
+        )
+
+    # --------------------------------------------------------
+    # Store token
+    # --------------------------------------------------------
+
+    with STATE_LOCK:
+
+        STATE[
+            "access_token"
+        ] = token
+
+        STATE[
+            "token_created_at"
+        ] = datetime.utcnow().isoformat()
+
+        STATE[
+            "authenticated"
+        ] = True
+
+        STATE[
+            "last_error"
+        ] = None
+
+    logger.info(
+        "Groww authentication successful."
+    )
+
+    logger.info(
+        "Groww session: %s",
+        data.get(
+            "sessionName",
+            "unknown",
+        ),
+    )
+
+    logger.info(
+        "Groww token expiry: %s",
+        data.get(
+            "expiry",
+            "unknown",
+        ),
+    )
 
     return token
 
 
-def get_access_token(force: bool = False) -> str:
-    """
-    Return cached token.
-    Generate a new one when necessary.
-    """
+# ============================================================
+# GET ACCESS TOKEN
+# ============================================================
+
+def get_access_token(
+    force: bool = False,
+) -> str:
 
     with STATE_LOCK:
-        token = STATE.get("access_token")
+
+        token = STATE.get(
+            "access_token"
+        )
 
     if token and not force:
         return token
@@ -292,30 +468,31 @@ def get_access_token(force: bool = False) -> str:
 
 
 # ============================================================
-# GROWW HEADERS
+# GROWW API HEADERS
 # ============================================================
 
 def groww_headers() -> Dict[str, str]:
-    """
-    Headers required by current Groww API.
-    """
 
     token = get_access_token()
 
     return {
-        "Authorization": f"Bearer {token}",
+        "Authorization": (
+            f"Bearer {token}"
+        ),
         "Accept": "application/json",
         "X-API-VERSION": "1.0",
     }
 
 
 # ============================================================
-# GENERIC GROWW GET
+# GROWW GET REQUEST
 # ============================================================
 
 def groww_get(
     url: str,
-    params: Optional[Dict[str, Any]] = None,
+    params: Optional[
+        Dict[str, Any]
+    ] = None,
     timeout: int = 30,
     retry_auth: bool = True,
 ) -> Dict[str, Any]:
@@ -329,15 +506,24 @@ def groww_get(
             timeout=timeout,
         )
 
-        # Access token may have expired.
-        if response.status_code in (401, 403) and retry_auth:
+        # ----------------------------------------------------
+        # Retry authentication once for auth errors.
+        # ----------------------------------------------------
+
+        if (
+            response.status_code in (401, 403)
+            and retry_auth
+        ):
 
             logger.warning(
-                "Groww returned %s. Refreshing access token...",
+                "Groww returned HTTP %s. "
+                "Refreshing access token...",
                 response.status_code,
             )
 
-            get_access_token(force=True)
+            get_access_token(
+                force=True
+            )
 
             response = requests.get(
                 url,
@@ -354,11 +540,21 @@ def groww_get(
                 error_body = response.text
 
             raise RuntimeError(
-                f"Groww HTTP {response.status_code}: "
+                f"Groww HTTP "
+                f"{response.status_code}: "
                 f"{error_body}"
             )
 
-        data = response.json()
+        try:
+
+            data = response.json()
+
+        except Exception:
+
+            raise RuntimeError(
+                "Groww returned invalid JSON: "
+                f"{response.text[:1000]}"
+            )
 
         if data.get("status") == "FAILURE":
 
@@ -376,37 +572,58 @@ def groww_get(
 
 
 # ============================================================
-# LOAD INSTRUMENTS
+# LOAD GROWW INSTRUMENT CSV
 # ============================================================
 
 def load_instruments() -> pd.DataFrame:
 
     global INSTRUMENTS_DF
 
-    logger.info("Downloading Groww instrument CSV...")
-
-    response = requests.get(
-        INSTRUMENT_CSV_URL,
-        timeout=60,
+    logger.info(
+        "Downloading Groww instrument CSV..."
     )
 
-    response.raise_for_status()
+    try:
+
+        response = requests.get(
+            INSTRUMENT_CSV_URL,
+            timeout=60,
+        )
+
+        response.raise_for_status()
+
+    except requests.RequestException as exc:
+
+        raise RuntimeError(
+            f"Could not download Groww instrument CSV: {exc}"
+        ) from exc
 
     from io import StringIO
 
-    df = pd.read_csv(
-        StringIO(response.text),
-        low_memory=False,
-    )
+    try:
 
-    # Normalize column names.
+        df = pd.read_csv(
+            StringIO(
+                response.text
+            ),
+            low_memory=False,
+        )
+
+    except Exception as exc:
+
+        raise RuntimeError(
+            f"Could not parse Groww instrument CSV: {exc}"
+        ) from exc
+
     df.columns = [
-        str(c).strip().lower()
-        for c in df.columns
+        str(column)
+        .strip()
+        .lower()
+        for column in df.columns
     ]
 
     logger.info(
-        "Instrument CSV loaded: %s rows",
+        "Groww instruments loaded: %s rows",
         len(df),
     )
 
@@ -416,24 +633,29 @@ def load_instruments() -> pd.DataFrame:
 
 
 # ============================================================
-# BUILD F&O STOCK UNIVERSE
+# BUILD NSE F&O STOCK UNIVERSE
 # ============================================================
 
 def build_fno_stock_universe(
     df: pd.DataFrame,
 ) -> Dict[str, Dict[str, Any]]:
 
-    required = {
+    required_columns = {
         "exchange",
         "segment",
         "trading_symbol",
     }
 
-    missing = required - set(df.columns)
+    missing = (
+        required_columns
+        - set(df.columns)
+    )
 
     if missing:
+
         raise RuntimeError(
-            f"Instrument CSV missing columns: {missing}"
+            "Groww instrument CSV is missing "
+            f"columns: {sorted(missing)}"
         )
 
     work = df.copy()
@@ -460,29 +682,31 @@ def build_fno_stock_universe(
     )
 
     # --------------------------------------------------------
-    # Find NSE FNO instruments.
+    # NSE FNO
     # --------------------------------------------------------
 
     fno = work[
-        (work["exchange"] == "NSE")
-        & (work["segment"] == "FNO")
+        (
+            work["exchange"]
+            == "NSE"
+        )
+        &
+        (
+            work["segment"]
+            == "FNO"
+        )
     ].copy()
 
     if fno.empty:
+
         raise RuntimeError(
-            "No NSE FNO instruments found in Groww instrument CSV."
+            "No NSE F&O instruments found "
+            "in Groww instrument CSV."
         )
 
     # --------------------------------------------------------
-    # Only individual stock underlyings.
-    #
-    # We exclude index derivatives such as:
-    # NIFTY
-    # BANKNIFTY
-    # FINNIFTY
-    # MIDCPNIFTY
-    # NIFTYNXT50
-    # etc.
+    # Index derivatives excluded.
+    # We want individual F&O stocks.
     # --------------------------------------------------------
 
     index_symbols = {
@@ -501,63 +725,76 @@ def build_fno_stock_universe(
         "NIFTYINFRA",
         "NIFTYMIDCAP",
         "NIFTYSMALLCAP",
-        "NIFTYCOMMODITIES",
-        "NIFTYCONSUMPTION",
-        "NIFTYCPSE",
-        "NIFTYDIVOPP50",
         "NIFTY100",
         "NIFTY200",
         "NIFTY500",
     }
 
-    universe: Dict[str, Dict[str, Any]] = {}
+    # --------------------------------------------------------
+    # Underlying symbol
+    # --------------------------------------------------------
 
-    # Prefer underlying_symbol where available.
-    if "underlying_symbol" in fno.columns:
+    if (
+        "underlying_symbol"
+        in fno.columns
+    ):
 
-        fno["underlying_symbol_clean"] = (
-            fno["underlying_symbol"]
+        fno[
+            "underlying_symbol_clean"
+        ] = (
+            fno[
+                "underlying_symbol"
+            ]
             .astype(str)
             .str.upper()
             .str.strip()
         )
 
-        fno["underlying_symbol_clean"] = (
-            fno["underlying_symbol_clean"]
-            .replace(
+        fno[
+            "underlying_symbol_clean"
+        ] = (
+            fno[
+                "underlying_symbol_clean"
+            ].replace(
                 {
                     "NAN": "",
                     "NONE": "",
-                    "NA": "",
+                    "NULL": "",
                 }
             )
         )
 
     else:
 
-        fno["underlying_symbol_clean"] = ""
+        fno[
+            "underlying_symbol_clean"
+        ] = ""
+
+    universe = {}
 
     for _, row in fno.iterrows():
 
-        symbol = str(
-            row.get("underlying_symbol_clean", "")
-        ).strip()
+        symbol = safe_string(
+            row.get(
+                "underlying_symbol_clean"
+            )
+        ).upper()
 
-        trading_symbol = str(
-            row.get("trading_symbol", "")
-        ).strip()
+        trading_symbol = safe_string(
+            row.get(
+                "trading_symbol"
+            )
+        ).upper()
 
-        # Fallback when underlying_symbol is absent.
+        # Fallback.
         if not symbol:
 
             symbol = trading_symbol
 
-            # Remove common FUT suffix/pattern.
-            for suffix in (
-                "FUT",
+            if symbol.endswith(
+                "FUT"
             ):
-                if symbol.endswith(suffix):
-                    symbol = symbol[:-len(suffix)]
+                symbol = symbol[:-3]
 
         if not symbol:
             continue
@@ -565,7 +802,6 @@ def build_fno_stock_universe(
         if symbol in index_symbols:
             continue
 
-        # Ignore malformed derivative rows.
         if symbol in {
             "NAN",
             "NONE",
@@ -577,22 +813,37 @@ def build_fno_stock_universe(
 
             universe[symbol] = {
                 "symbol": symbol,
-                "name": str(
-                    row.get("name", symbol)
+
+                "name": safe_string(
+                    row.get(
+                        "name",
+                        symbol,
+                    )
                 ),
+
                 "exchange": "NSE",
+
                 "segment": "FNO",
-                "fno_trading_symbol": trading_symbol,
-                "lot_size": safe_number(
-                    row.get("lot_size")
+
+                "fno_trading_symbol": (
+                    trading_symbol
                 ),
+
+                "lot_size": safe_number(
+                    row.get(
+                        "lot_size"
+                    )
+                ),
+
                 "expiry_date": safe_string(
-                    row.get("expiry_date")
+                    row.get(
+                        "expiry_date"
+                    )
                 ),
             }
 
     logger.info(
-        "NSE F&O stock universe created: %s stocks",
+        "NSE F&O stock universe: %s stocks",
         len(universe),
     )
 
@@ -600,19 +851,33 @@ def build_fno_stock_universe(
 
 
 # ============================================================
-# FIND CASH SYMBOL
+# BUILD CASH SYMBOL MAP
 # ============================================================
 
 def build_cash_symbol_map(
     df: pd.DataFrame,
-    universe: Dict[str, Dict[str, Any]],
+    universe: Dict[
+        str,
+        Dict[str, Any]
+    ],
 ) -> Dict[str, str]:
 
     result = {}
 
     cash = df[
-        (df["exchange"].astype(str).str.upper() == "NSE")
-        & (df["segment"].astype(str).str.upper() == "CASH")
+        (
+            df["exchange"]
+            .astype(str)
+            .str.upper()
+            == "NSE"
+        )
+        &
+        (
+            df["segment"]
+            .astype(str)
+            .str.upper()
+            == "CASH"
+        )
     ].copy()
 
     cash["trading_symbol"] = (
@@ -622,9 +887,19 @@ def build_cash_symbol_map(
         .str.strip()
     )
 
-    if "groww_symbol" in cash.columns:
-        cash["groww_symbol"] = (
-            cash["groww_symbol"]
+    has_groww_symbol = (
+        "groww_symbol"
+        in cash.columns
+    )
+
+    if has_groww_symbol:
+
+        cash[
+            "groww_symbol"
+        ] = (
+            cash[
+                "groww_symbol"
+            ]
             .astype(str)
             .str.strip()
         )
@@ -632,80 +907,118 @@ def build_cash_symbol_map(
     for symbol in universe:
 
         matches = cash[
-            cash["trading_symbol"] == symbol
+            cash[
+                "trading_symbol"
+            ]
+            == symbol
         ]
 
         if matches.empty:
-            # Groww stock symbols normally follow NSE-SYMBOL.
-            result[symbol] = f"NSE-{symbol}"
+
+            result[
+                symbol
+            ] = f"NSE-{symbol}"
+
             continue
 
         row = matches.iloc[0]
 
-        groww_symbol = safe_string(
-            row.get("groww_symbol")
-        )
+        if has_groww_symbol:
+
+            groww_symbol = safe_string(
+                row.get(
+                    "groww_symbol"
+                )
+            )
+
+        else:
+
+            groww_symbol = ""
 
         if not groww_symbol:
-            groww_symbol = f"NSE-{symbol}"
 
-        result[symbol] = groww_symbol
+            groww_symbol = (
+                f"NSE-{symbol}"
+            )
+
+        result[
+            symbol
+        ] = groww_symbol
 
     return result
 
 
 # ============================================================
-# SAFE HELPERS
+# TIME WINDOW
 # ============================================================
 
-def safe_number(value: Any) -> Optional[float]:
+def history_start_end(
+    timeframe: str,
+):
 
-    try:
+    days = HISTORY_WINDOWS.get(
+        timeframe,
+        30,
+    )
 
-        if pd.isna(value):
-            return None
+    end = datetime.now()
 
-    except Exception:
-        pass
+    start = (
+        end
+        - timedelta(
+            days=days
+        )
+    )
 
-    try:
-        return float(value)
-    except Exception:
-        return None
-
-
-def safe_string(value: Any) -> str:
-
-    try:
-
-        if pd.isna(value):
-            return ""
-
-    except Exception:
-        pass
-
-    return str(value).strip()
+    return (
+        start.strftime(
+            "%Y-%m-%d %H:%M:%S"
+        ),
+        end.strftime(
+            "%Y-%m-%d %H:%M:%S"
+        ),
+    )
 
 
 # ============================================================
-# HISTORICAL CANDLE PARSER
+# PARSE GROWW CANDLES
 # ============================================================
 
 def parse_groww_candles(
     data: Dict[str, Any],
 ) -> pd.DataFrame:
 
-    payload = data.get("payload", {})
+    payload = data.get(
+        "payload",
+        {}
+    )
 
     candles = []
 
-    if isinstance(payload, dict):
+    if isinstance(
+        payload,
+        dict,
+    ):
 
-        candles = payload.get("candles", [])
+        candles = payload.get(
+            "candles",
+            []
+        )
 
-    elif isinstance(payload, list):
+    elif isinstance(
+        payload,
+        list,
+    ):
 
         candles = payload
+
+    # Some APIs can return candles directly.
+    if not candles:
+
+        candles = data.get(
+            "candles",
+            []
+        )
 
     if not candles:
 
@@ -725,53 +1038,60 @@ def parse_groww_candles(
 
     for candle in candles:
 
-        # Typical Groww response:
-        #
-        # [
-        #   timestamp,
-        #   open,
-        #   high,
-        #   low,
-        #   close,
-        #   volume
-        # ]
-        #
-        # Some FNO responses can also contain OI.
-
-        if isinstance(candle, dict):
+        if isinstance(
+            candle,
+            dict,
+        ):
 
             timestamp = (
-                candle.get("timestamp")
-                or candle.get("time")
-                or candle.get("ts")
+                candle.get(
+                    "timestamp"
+                )
+                or candle.get(
+                    "time"
+                )
+                or candle.get(
+                    "ts"
+                )
             )
 
-            open_price = (
-                candle.get("open")
+            open_price = candle.get(
+                "open"
             )
 
-            high_price = (
-                candle.get("high")
+            high_price = candle.get(
+                "high"
             )
 
-            low_price = (
-                candle.get("low")
+            low_price = candle.get(
+                "low"
             )
 
-            close_price = (
-                candle.get("close")
+            close_price = candle.get(
+                "close"
             )
 
-            volume = (
-                candle.get("volume", 0)
+            volume = candle.get(
+                "volume",
+                0,
             )
 
             oi = (
-                candle.get("oi")
-                or candle.get("open_interest")
+                candle.get(
+                    "oi"
+                )
+                or candle.get(
+                    "open_interest"
+                )
             )
 
-        elif isinstance(candle, (list, tuple)):
+        elif isinstance(
+            candle,
+            (
+                list,
+                tuple,
+            ),
+        ):
 
             if len(candle) < 5:
                 continue
@@ -795,27 +1115,56 @@ def parse_groww_candles(
             )
 
         else:
+
             continue
 
         rows.append(
             {
                 "timestamp": timestamp,
-                "open": safe_number(open_price),
-                "high": safe_number(high_price),
-                "low": safe_number(low_price),
-                "close": safe_number(close_price),
-                "volume": safe_number(volume) or 0,
-                "oi": safe_number(oi),
+
+                "open": safe_number(
+                    open_price
+                ),
+
+                "high": safe_number(
+                    high_price
+                ),
+
+                "low": safe_number(
+                    low_price
+                ),
+
+                "close": safe_number(
+                    close_price
+                ),
+
+                "volume": (
+                    safe_number(
+                        volume
+                    )
+                    or 0
+                ),
+
+                "oi": safe_number(
+                    oi
+                ),
             }
         )
 
     if not rows:
+
         return pd.DataFrame()
 
-    result = pd.DataFrame(rows)
+    result = pd.DataFrame(
+        rows
+    )
 
-    result["timestamp"] = pd.to_datetime(
-        result["timestamp"],
+    result[
+        "timestamp"
+    ] = pd.to_datetime(
+        result[
+            "timestamp"
+        ],
         errors="coerce",
     )
 
@@ -834,7 +1183,9 @@ def parse_groww_candles(
     )
 
     result = result.drop_duplicates(
-        subset=["timestamp"],
+        subset=[
+            "timestamp"
+        ],
         keep="last",
     )
 
@@ -846,42 +1197,7 @@ def parse_groww_candles(
 
 
 # ============================================================
-# HISTORY WINDOW
-# ============================================================
-
-def history_start_end(
-    timeframe: str,
-):
-    """
-    Return start/end strings accepted by Groww.
-    """
-
-    days = HISTORY_WINDOWS.get(
-        timeframe,
-        30,
-    )
-
-    end = datetime.now()
-
-    start = end - timedelta(
-        days=days
-    )
-
-    # Groww accepts:
-    # yyyy-MM-dd HH:mm:ss
-    start_str = start.strftime(
-        "%Y-%m-%d %H:%M:%S"
-    )
-
-    end_str = end.strftime(
-        "%Y-%m-%d %H:%M:%S"
-    )
-
-    return start_str, end_str
-
-
-# ============================================================
-# FETCH HISTORY
+# FETCH HISTORICAL DATA
 # ============================================================
 
 def fetch_history(
@@ -899,44 +1215,62 @@ def fetch_history(
     )
 
     if not interval:
+
         raise RuntimeError(
-            f"Unsupported timeframe: {timeframe}"
+            f"Unsupported timeframe: "
+            f"{timeframe}"
         )
 
-    cache_key = f"{symbol}:{timeframe}"
+    cache_key = (
+        f"{symbol}:{timeframe}"
+    )
 
     now = time.time()
 
     if not force:
 
-        last_fetch = HISTORY_FETCH_TIME.get(
-            cache_key,
-            0,
+        last_fetch = (
+            HISTORY_FETCH_TIME.get(
+                cache_key,
+                0,
+            )
         )
 
-        # Avoid hammering historical API.
-        if now - last_fetch < HISTORY_REFRESH_SECONDS:
+        if (
+            now - last_fetch
+            < HISTORY_REFRESH_SECONDS
+        ):
 
-            existing = HISTORY.get(
-                symbol,
-                {}
-            ).get(timeframe)
+            existing = (
+                HISTORY
+                .get(
+                    symbol,
+                    {}
+                )
+                .get(
+                    timeframe
+                )
+            )
 
             if existing is not None:
                 return existing
 
-    groww_symbol = CASH_SYMBOLS.get(
-        symbol,
-        f"NSE-{symbol}",
+    groww_symbol = (
+        CASH_SYMBOLS.get(
+            symbol,
+            f"NSE-{symbol}",
+        )
     )
 
-    start_time, end_time = history_start_end(
-        timeframe
+    start_time, end_time = (
+        history_start_end(
+            timeframe
+        )
     )
 
     params = {
         "exchange": "NSE",
-        "segment": HISTORY_SEGMENT,
+        "segment": "CASH",
         "groww_symbol": groww_symbol,
         "start_time": start_time,
         "end_time": end_time,
@@ -990,120 +1324,12 @@ def fetch_history(
         )
 
         with STATE_LOCK:
-            STATE["last_error"] = str(exc)
+
+            STATE[
+                "last_error"
+            ] = str(exc)
 
         raise
-
-
-# ============================================================
-# GET LIVE LTP
-# ============================================================
-
-def fetch_ltp_batch(
-    symbols: List[str],
-) -> Dict[str, float]:
-
-    if not symbols:
-        return {}
-
-    result: Dict[str, float] = {}
-
-    # Groww allows up to 50 instruments per LTP request.
-    for start in range(
-        0,
-        len(symbols),
-        50,
-    ):
-
-        batch = symbols[
-            start:start + 50
-        ]
-
-        exchange_symbols = ",".join(
-            f"NSE_{symbol}"
-            for symbol in batch
-        )
-
-        params = {
-            "segment": "CASH",
-            "exchange_symbols": exchange_symbols,
-        }
-
-        try:
-
-            data = groww_get(
-                GROWW_LTP_URL,
-                params=params,
-                timeout=20,
-            )
-
-            payload = data.get(
-                "payload",
-                {}
-            )
-
-            if isinstance(payload, dict):
-
-                for key, value in payload.items():
-
-                    # NSE_RELIANCE -> RELIANCE
-                    symbol = key
-
-                    if symbol.startswith(
-                        "NSE_"
-                    ):
-                        symbol = symbol[4:]
-
-                    price = safe_number(
-                        value
-                    )
-
-                    if price is not None:
-                        result[symbol] = price
-
-        except Exception as exc:
-
-            logger.error(
-                "LTP batch error: %s",
-                exc,
-            )
-
-            with STATE_LOCK:
-                STATE["last_error"] = str(exc)
-
-        # Small delay between batches.
-        time.sleep(0.10)
-
-    return result
-
-
-# ============================================================
-# UPDATE LIVE PRICES
-# ============================================================
-
-def update_live_prices():
-
-    symbols = list(
-        FNO_STOCKS.keys()
-    )
-
-    if not symbols:
-        return
-
-    ltp_data = fetch_ltp_batch(
-        symbols
-    )
-
-    if ltp_data:
-
-        LIVE_LTP.update(
-            ltp_data
-        )
-
-        with STATE_LOCK:
-            STATE["last_ltp_update"] = (
-                datetime.utcnow().isoformat()
-            )
 
 
 # ============================================================
@@ -1141,42 +1367,54 @@ def load_stock_history(
 
     timeframes = []
 
-    for tf in (
+    for timeframe in (
         entry_tf,
         wave_tf,
         tide_tf,
     ):
 
-        if tf not in timeframes:
-            timeframes.append(tf)
+        if timeframe not in timeframes:
+            timeframes.append(
+                timeframe
+            )
 
     success = 0
 
-    for tf in timeframes:
+    for timeframe in timeframes:
 
         try:
 
-            df = fetch_history(
+            candles = fetch_history(
                 symbol,
-                tf,
+                timeframe,
                 force=True,
             )
 
-            if df is not None and not df.empty:
+            if (
+                candles is not None
+                and not candles.empty
+            ):
+
                 success += 1
 
         except Exception:
+
             continue
 
-    return success, len(timeframes)
+    return (
+        success,
+        len(timeframes),
+    )
 
 
 # ============================================================
-# INITIAL HISTORY LOAD
+# LOAD ALL HISTORY
 # ============================================================
 
 def load_all_history(
-    settings: Optional[Dict[str, Any]] = None,
+    settings: Optional[
+        Dict[str, Any]
+    ] = None,
 ):
 
     if settings is None:
@@ -1190,7 +1428,7 @@ def load_all_history(
     total_failed = 0
 
     logger.info(
-        "Starting historical load for %s F&O stocks...",
+        "Starting history load for %s stocks...",
         len(symbols),
     )
 
@@ -1201,14 +1439,19 @@ def load_all_history(
 
         try:
 
-            success, total = load_stock_history(
-                symbol,
-                settings,
+            success, total = (
+                load_stock_history(
+                    symbol,
+                    settings,
+                )
             )
 
             if success > 0:
+
                 total_success += 1
+
             else:
+
                 total_failed += 1
 
         except Exception as exc:
@@ -1221,13 +1464,15 @@ def load_all_history(
                 exc,
             )
 
-        # Keep API requests controlled.
-        time.sleep(0.05)
+        # Small throttle.
+        time.sleep(
+            0.08
+        )
 
         if index % 10 == 0:
 
             logger.info(
-                "History progress: %s/%s | loaded=%s failed=%s",
+                "History progress %s/%s | loaded=%s | failed=%s",
                 index,
                 len(symbols),
                 total_success,
@@ -1236,28 +1481,155 @@ def load_all_history(
 
     with STATE_LOCK:
 
-        STATE["history_loaded"] = total_success
-        STATE["history_failed"] = total_failed
-        STATE["last_history_update"] = (
-            datetime.utcnow().isoformat()
-        )
+        STATE[
+            "history_loaded"
+        ] = total_success
+
+        STATE[
+            "history_failed"
+        ] = total_failed
+
+        STATE[
+            "last_history_update"
+        ] = datetime.utcnow().isoformat()
 
     logger.info(
-        "Historical load complete | loaded=%s | failed=%s",
+        "History load complete | "
+        "loaded=%s | failed=%s",
         total_success,
         total_failed,
     )
 
 
 # ============================================================
-# ENGINE HISTORY SYNC
+# LIVE LTP
+# ============================================================
+
+def fetch_ltp_batch(
+    symbols: List[str],
+) -> Dict[str, float]:
+
+    result = {}
+
+    if not symbols:
+        return result
+
+    # Maximum 50 symbols per request.
+    for start in range(
+        0,
+        len(symbols),
+        50,
+    ):
+
+        batch = symbols[
+            start:start + 50
+        ]
+
+        exchange_symbols = ",".join(
+            f"NSE_{symbol}"
+            for symbol in batch
+        )
+
+        params = {
+            "segment": "CASH",
+            "exchange_symbols": exchange_symbols,
+        }
+
+        try:
+
+            data = groww_get(
+                GROWW_LTP_URL,
+                params=params,
+                timeout=20,
+            )
+
+            payload = data.get(
+                "payload",
+                {}
+            )
+
+            if isinstance(
+                payload,
+                dict,
+            ):
+
+                for key, value in (
+                    payload.items()
+                ):
+
+                    symbol = str(
+                        key
+                    )
+
+                    if symbol.startswith(
+                        "NSE_"
+                    ):
+
+                        symbol = (
+                            symbol[4:]
+                        )
+
+                    price = safe_number(
+                        value
+                    )
+
+                    if price is not None:
+
+                        result[
+                            symbol
+                        ] = price
+
+        except Exception as exc:
+
+            logger.error(
+                "LTP batch error: %s",
+                exc,
+            )
+
+            with STATE_LOCK:
+
+                STATE[
+                    "last_error"
+                ] = str(exc)
+
+        time.sleep(
+            0.10
+        )
+
+    return result
+
+
+def update_live_prices():
+
+    symbols = list(
+        FNO_STOCKS.keys()
+    )
+
+    if not symbols:
+        return
+
+    ltp_data = fetch_ltp_batch(
+        symbols
+    )
+
+    if ltp_data:
+
+        LIVE_LTP.update(
+            ltp_data
+        )
+
+        with STATE_LOCK:
+
+            STATE[
+                "last_ltp_update"
+            ] = datetime.utcnow().isoformat()
+
+
+# ============================================================
+# SYNC DATA INTO STRATEGY ENGINE
 # ============================================================
 
 def sync_engine_history():
-
-    """
-    Send all loaded historical candles into strategy engine.
-    """
 
     for symbol in list(
         FNO_STOCKS.keys()
@@ -1273,11 +1645,9 @@ def sync_engine_history():
 
         try:
 
-            # ScannerEngine in the current strategy.py
-            # supports history storage through set_history().
             if hasattr(
                 ENGINE,
-                "set_history"
+                "set_history",
             ):
 
                 ENGINE.set_history(
@@ -1287,7 +1657,7 @@ def sync_engine_history():
 
             elif hasattr(
                 ENGINE,
-                "histories"
+                "histories",
             ):
 
                 ENGINE.histories[
@@ -1304,7 +1674,7 @@ def sync_engine_history():
 
 
 # ============================================================
-# SCANNER SNAPSHOT
+# CALCULATE SCANNER
 # ============================================================
 
 def calculate_scanner():
@@ -1335,30 +1705,33 @@ def calculate_scanner():
 
         try:
 
-            # Preferred ScannerEngine API.
             if hasattr(
                 ENGINE,
-                "analyze_symbol"
+                "analyze_symbol",
             ):
 
-                result = ENGINE.analyze_symbol(
-                    symbol,
-                    live_price=price,
+                result = (
+                    ENGINE.analyze_symbol(
+                        symbol,
+                        live_price=price,
+                    )
                 )
 
             elif hasattr(
                 ENGINE,
-                "scan_symbol"
+                "scan_symbol",
             ):
 
-                result = ENGINE.scan_symbol(
-                    symbol,
-                    live_price=price,
+                result = (
+                    ENGINE.scan_symbol(
+                        symbol,
+                        live_price=price,
+                    )
                 )
 
             elif hasattr(
                 ENGINE,
-                "analyze"
+                "analyze",
             ):
 
                 result = ENGINE.analyze(
@@ -1376,18 +1749,18 @@ def calculate_scanner():
 
         if not isinstance(
             result,
-            dict
+            dict,
         ):
 
             result = {}
 
-        # ----------------------------------------------------
-        # Normalize strategy fields for dashboard.
-        # ----------------------------------------------------
-
         signal = (
-            result.get("signal")
-            or result.get("Signal")
+            result.get(
+                "signal"
+            )
+            or result.get(
+                "Signal"
+            )
             or "WAIT"
         )
 
@@ -1396,16 +1769,28 @@ def calculate_scanner():
         )
 
         wave = (
-            result.get("wave")
-            or result.get("wave_signal")
-            or result.get("wave_direction")
+            result.get(
+                "wave"
+            )
+            or result.get(
+                "wave_signal"
+            )
+            or result.get(
+                "wave_direction"
+            )
             or "WAIT"
         )
 
         tide = (
-            result.get("tide")
-            or result.get("tide_signal")
-            or result.get("tide_direction")
+            result.get(
+                "tide"
+            )
+            or result.get(
+                "tide_signal"
+            )
+            or result.get(
+                "tide_direction"
+            )
             or "WAIT"
         )
 
@@ -1414,8 +1799,12 @@ def calculate_scanner():
         )
 
         stop_loss = (
-            result.get("stop_loss")
-            or result.get("sl")
+            result.get(
+                "stop_loss"
+            )
+            or result.get(
+                "sl"
+            )
         )
 
         target = result.get(
@@ -1431,7 +1820,9 @@ def calculate_scanner():
         )
 
         row = {
+
             "symbol": symbol,
+
             "name": meta.get(
                 "name",
                 symbol,
@@ -1440,25 +1831,35 @@ def calculate_scanner():
             "price": (
                 price
                 if price is not None
-                else result.get("price")
+                else result.get(
+                    "price"
+                )
             ),
 
             "ltp": (
                 price
                 if price is not None
-                else result.get("ltp")
+                else result.get(
+                    "ltp"
+                )
             ),
 
             "signal": signal,
+
             "score": score,
 
             "wave": wave,
+
             "tide": tide,
 
             "entry": entry,
+
             "stop_loss": stop_loss,
+
             "sl": stop_loss,
+
             "target": target,
+
             "rr": rr,
 
             "confirmations": confirmations,
@@ -1500,6 +1901,7 @@ def calculate_scanner():
             ),
 
             "exchange": "NSE",
+
             "segment": "FNO",
 
             "data_available": bool(
@@ -1515,15 +1917,15 @@ def calculate_scanner():
             ),
         }
 
-        rows.append(row)
+        rows.append(
+            row
+        )
 
     # --------------------------------------------------------
-    # Sort:
-    # BUY first, SELL second, WAIT last.
-    # Within same signal, higher score first.
+    # BUY -> SELL -> WAIT
     # --------------------------------------------------------
 
-    signal_priority = {
+    priority = {
         "BUY": 0,
         "SELL": 1,
         "WAIT": 2,
@@ -1532,18 +1934,23 @@ def calculate_scanner():
     def sort_key(row):
 
         signal = str(
-            row.get("signal", "WAIT")
+            row.get(
+                "signal",
+                "WAIT",
+            )
         ).upper()
 
         score = safe_number(
-            row.get("score")
+            row.get(
+                "score"
+            )
         )
 
         if score is None:
             score = 0
 
         return (
-            signal_priority.get(
+            priority.get(
                 signal,
                 3,
             ),
@@ -1562,13 +1969,13 @@ def calculate_scanner():
 
 
 # ============================================================
-# BACKGROUND WORKER
+# BACKGROUND SCANNER
 # ============================================================
 
 def scanner_worker():
 
     logger.info(
-        "Scanner background worker starting..."
+        "Scanner background worker started."
     )
 
     while True:
@@ -1576,7 +1983,7 @@ def scanner_worker():
         try:
 
             # ----------------------------------------------
-            # Refresh live prices.
+            # Live prices
             # ----------------------------------------------
 
             if FNO_STOCKS:
@@ -1584,7 +1991,7 @@ def scanner_worker():
                 update_live_prices()
 
             # ----------------------------------------------
-            # Keep historical data reasonably fresh.
+            # History refresh
             # ----------------------------------------------
 
             now = time.time()
@@ -1605,14 +2012,11 @@ def scanner_worker():
                     now - oldest
                     >= HISTORY_REFRESH_SECONDS
                 ):
+
                     needs_history = True
 
             if needs_history:
 
-                # Do not continuously reload all stocks
-                # every 5 seconds.
-                #
-                # Only refresh after the configured interval.
                 load_all_history(
                     ENGINE.settings
                 )
@@ -1620,22 +2024,25 @@ def scanner_worker():
                 sync_engine_history()
 
             # ----------------------------------------------
-            # Market status.
+            # Status
             # ----------------------------------------------
 
             with STATE_LOCK:
 
                 if LIVE_LTP:
+
                     STATE[
                         "market_status"
                     ] = "LIVE"
 
                 elif HISTORY:
+
                     STATE[
                         "market_status"
                     ] = "HISTORY"
 
                 else:
+
                     STATE[
                         "market_status"
                     ] = "WAITING"
@@ -1643,13 +2050,18 @@ def scanner_worker():
         except Exception as exc:
 
             logger.exception(
-                "Scanner worker error"
+                "Scanner worker error."
             )
 
             with STATE_LOCK:
+
                 STATE[
                     "last_error"
                 ] = str(exc)
+
+                STATE[
+                    "market_status"
+                ] = "ERROR"
 
         time.sleep(
             LTP_REFRESH_SECONDS
@@ -1657,7 +2069,7 @@ def scanner_worker():
 
 
 # ============================================================
-# STARTUP INITIALIZATION
+# INITIALIZE SCANNER
 # ============================================================
 
 def initialize_scanner():
@@ -1678,13 +2090,13 @@ def initialize_scanner():
     try:
 
         # ----------------------------------------------------
-        # 1. Authentication
+        # 1. Groww authentication
         # ----------------------------------------------------
 
         get_access_token()
 
         # ----------------------------------------------------
-        # 2. Instruments
+        # 2. Instrument CSV
         # ----------------------------------------------------
 
         df = load_instruments()
@@ -1693,13 +2105,17 @@ def initialize_scanner():
         # 3. F&O universe
         # ----------------------------------------------------
 
-        universe = build_fno_stock_universe(
-            df
+        universe = (
+            build_fno_stock_universe(
+                df
+            )
         )
 
-        cash_map = build_cash_symbol_map(
-            df,
-            universe,
+        cash_map = (
+            build_cash_symbol_map(
+                df,
+                universe,
+            )
         )
 
         FNO_STOCKS.clear()
@@ -1720,7 +2136,9 @@ def initialize_scanner():
 
             STATE[
                 "fno_stock_count"
-            ] = len(FNO_STOCKS)
+            ] = len(
+                FNO_STOCKS
+            )
 
             STATE[
                 "fno_stocks"
@@ -1728,13 +2146,17 @@ def initialize_scanner():
                 FNO_STOCKS.keys()
             )
 
+            STATE[
+                "market_status"
+            ] = "LOADING"
+
         logger.info(
-            "F&O stock universe ready: %s",
+            "F&O universe ready: %s stocks.",
             len(FNO_STOCKS),
         )
 
         # ----------------------------------------------------
-        # 4. Load initial history
+        # 4. Initial history
         # ----------------------------------------------------
 
         load_all_history(
@@ -1744,7 +2166,7 @@ def initialize_scanner():
         sync_engine_history()
 
         # ----------------------------------------------------
-        # 5. Initial LTP
+        # 5. Initial live prices
         # ----------------------------------------------------
 
         update_live_prices()
@@ -1760,10 +2182,6 @@ def initialize_scanner():
         )
 
         worker.start()
-
-        logger.info(
-            "Scanner worker started."
-        )
 
         logger.info(
             "Scanner initialization complete."
@@ -1782,12 +2200,12 @@ def initialize_scanner():
             ] = False
 
             STATE[
-                "last_error"
-            ] = str(exc)
-
-            STATE[
                 "market_status"
             ] = "ERROR"
+
+            STATE[
+                "last_error"
+            ] = str(exc)
 
 
 # ============================================================
@@ -1800,14 +2218,14 @@ def startup_event():
     thread = threading.Thread(
         target=initialize_scanner,
         daemon=True,
-        name="scanner-init",
+        name="scanner-initializer",
     )
 
     thread.start()
 
 
 # ============================================================
-# API: HEALTH
+# HEALTH
 # ============================================================
 
 @app.get("/health")
@@ -1820,7 +2238,7 @@ def health():
 
 
 # ============================================================
-# API: STATUS
+# STATUS
 # ============================================================
 
 @app.get("/api/status")
@@ -1878,7 +2296,7 @@ def api_status():
 
 
 # ============================================================
-# API: SCANNER
+# SCANNER API
 # ============================================================
 
 @app.get("/api/scanner")
@@ -1896,7 +2314,8 @@ def api_scanner():
                     "signal",
                     "",
                 )
-            ).upper() == "BUY"
+            ).upper()
+            == "BUY"
         )
 
         sell_count = sum(
@@ -1907,17 +2326,23 @@ def api_scanner():
                     "signal",
                     "",
                 )
-            ).upper() == "SELL"
+            ).upper()
+            == "SELL"
         )
 
-        wait_count = len(
-            rows
-        ) - buy_count - sell_count
+        wait_count = (
+            len(rows)
+            - buy_count
+            - sell_count
+        )
 
         return {
             "status": "success",
 
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": (
+                datetime.utcnow()
+                .isoformat()
+            ),
 
             "count": len(rows),
 
@@ -1929,13 +2354,14 @@ def api_scanner():
             },
 
             "stocks": rows,
+
             "data": rows,
         }
 
     except Exception as exc:
 
         logger.exception(
-            "Scanner API error"
+            "Scanner API error."
         )
 
         return JSONResponse(
@@ -1950,7 +2376,7 @@ def api_scanner():
 
 
 # ============================================================
-# API: GET SETTINGS
+# GET SETTINGS
 # ============================================================
 
 @app.get("/api/settings")
@@ -1965,7 +2391,7 @@ def get_settings():
 
 
 # ============================================================
-# API: UPDATE SETTINGS
+# UPDATE SETTINGS
 # ============================================================
 
 @app.post("/api/settings")
@@ -1975,11 +2401,9 @@ async def update_settings(
 
     try:
 
-        incoming = (
-            payload.get(
-                "settings",
-                payload,
-            )
+        incoming = payload.get(
+            "settings",
+            payload,
         )
 
         if not isinstance(
@@ -1992,10 +2416,13 @@ async def update_settings(
             )
 
         # ----------------------------------------------------
-        # Normalize timeframe values.
+        # Timeframes
         # ----------------------------------------------------
 
-        if "entry_timeframe" in incoming:
+        if (
+            "entry_timeframe"
+            in incoming
+        ):
 
             incoming[
                 "entry_timeframe"
@@ -2006,7 +2433,10 @@ async def update_settings(
                 "5m",
             )
 
-        if "wave_timeframe" in incoming:
+        if (
+            "wave_timeframe"
+            in incoming
+        ):
 
             incoming[
                 "wave_timeframe"
@@ -2017,7 +2447,10 @@ async def update_settings(
                 "15m",
             )
 
-        if "tide_timeframe" in incoming:
+        if (
+            "tide_timeframe"
+            in incoming
+        ):
 
             incoming[
                 "tide_timeframe"
@@ -2029,12 +2462,12 @@ async def update_settings(
             )
 
         # ----------------------------------------------------
-        # Let strategy engine validate its settings.
+        # Update strategy
         # ----------------------------------------------------
 
         if hasattr(
             ENGINE,
-            "update_settings"
+            "update_settings",
         ):
 
             ENGINE.update_settings(
@@ -2043,7 +2476,7 @@ async def update_settings(
 
         elif hasattr(
             ENGINE,
-            "set_settings"
+            "set_settings",
         ):
 
             ENGINE.set_settings(
@@ -2057,15 +2490,16 @@ async def update_settings(
             )
 
         logger.info(
-            "Strategy settings updated: %s",
-            ENGINE.settings,
+            "Strategy settings updated."
         )
 
         # ----------------------------------------------------
-        # Clear old history because timeframe can change.
+        # Clear old history.
+        # Timeframe could have changed.
         # ----------------------------------------------------
 
         HISTORY.clear()
+
         HISTORY_FETCH_TIME.clear()
 
         with STATE_LOCK:
@@ -2079,10 +2513,10 @@ async def update_settings(
             ] = 0
 
         # ----------------------------------------------------
-        # Reload in background.
+        # Reload history in background.
         # ----------------------------------------------------
 
-        def reload_after_settings():
+        def reload_history():
 
             try:
 
@@ -2095,16 +2529,17 @@ async def update_settings(
             except Exception as exc:
 
                 logger.exception(
-                    "History reload failed after settings change"
+                    "History reload failed."
                 )
 
                 with STATE_LOCK:
+
                     STATE[
                         "last_error"
                     ] = str(exc)
 
         threading.Thread(
-            target=reload_after_settings,
+            target=reload_history,
             daemon=True,
         ).start()
 
@@ -2118,7 +2553,7 @@ async def update_settings(
     except Exception as exc:
 
         logger.exception(
-            "Settings update error"
+            "Settings update error."
         )
 
         return JSONResponse(
@@ -2131,7 +2566,7 @@ async def update_settings(
 
 
 # ============================================================
-# API: RESET / REFRESH
+# RESET / REFRESH
 # ============================================================
 
 @app.post("/api/reset")
@@ -2140,6 +2575,7 @@ def reset_scanner():
     try:
 
         HISTORY.clear()
+
         HISTORY_FETCH_TIME.clear()
 
         with STATE_LOCK:
@@ -2156,6 +2592,10 @@ def reset_scanner():
                 "last_error"
             ] = None
 
+            STATE[
+                "market_status"
+            ] = "REFRESHING"
+
         def reload():
 
             try:
@@ -2171,10 +2611,11 @@ def reset_scanner():
             except Exception as exc:
 
                 logger.exception(
-                    "Reset reload failed"
+                    "Reset reload failed."
                 )
 
                 with STATE_LOCK:
+
                     STATE[
                         "last_error"
                     ] = str(exc)
@@ -2186,7 +2627,9 @@ def reset_scanner():
 
         return {
             "status": "success",
-            "message": "Scanner refresh started.",
+            "message": (
+                "Scanner refresh started."
+            ),
         }
 
     except Exception as exc:
@@ -2201,7 +2644,7 @@ def reset_scanner():
 
 
 # ============================================================
-# API: FORCE AUTH TEST
+# GROWW AUTH TEST
 # ============================================================
 
 @app.get("/api/groww-test")
@@ -2213,8 +2656,13 @@ def groww_test():
 
         return {
             "status": "success",
-            "authenticated": bool(token),
-            "message": "Groww API authentication is working.",
+            "authenticated": bool(
+                token
+            ),
+            "message": (
+                "Groww authentication "
+                "is working."
+            ),
         }
 
     except Exception as exc:
@@ -2230,7 +2678,7 @@ def groww_test():
 
 
 # ============================================================
-# API: F&O UNIVERSE
+# F&O UNIVERSE API
 # ============================================================
 
 @app.get("/api/universe")
@@ -2238,21 +2686,30 @@ def api_universe():
 
     stocks = []
 
-    for symbol, meta in FNO_STOCKS.items():
+    for symbol, meta in (
+        FNO_STOCKS.items()
+    ):
 
         stocks.append(
             {
                 "symbol": symbol,
+
                 "name": meta.get(
                     "name",
                     symbol,
                 ),
+
                 "exchange": "NSE",
+
                 "segment": "FNO",
-                "cash_groww_symbol": CASH_SYMBOLS.get(
-                    symbol,
-                    f"NSE-{symbol}",
+
+                "cash_groww_symbol": (
+                    CASH_SYMBOLS.get(
+                        symbol,
+                        f"NSE-{symbol}",
+                    )
                 ),
+
                 "lot_size": meta.get(
                     "lot_size"
                 ),
@@ -2260,7 +2717,8 @@ def api_universe():
         )
 
     stocks.sort(
-        key=lambda x: x["symbol"]
+        key=lambda item:
+        item["symbol"]
     )
 
     return {
@@ -2274,7 +2732,9 @@ def api_universe():
 # STATIC FRONTEND
 # ============================================================
 
-if os.path.isdir("static"):
+if os.path.isdir(
+    "static"
+):
 
     app.mount(
         "/",
@@ -2287,7 +2747,7 @@ if os.path.isdir("static"):
 
 
 # ============================================================
-# LOCAL RUN SUPPORT
+# DIRECT PYTHON START
 # ============================================================
 
 if __name__ == "__main__":

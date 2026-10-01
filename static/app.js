@@ -52,6 +52,8 @@ async function refresh() {
 
 async function openSettings() {
   const s = await api("/api/settings");
+  const tg = document.getElementById("telegram_enabled");
+  if (tg) tg.checked = !!s.telegram_enabled;
   Object.keys(s).forEach(k => {
     const el = document.getElementById(k);
     if (el) el.value = s[k];
@@ -65,7 +67,8 @@ async function saveSettings() {
     "rsi_length","rsi_overbought","rsi_oversold","macd_fast","macd_slow","macd_signal",
     "stoch_k","stoch_d","stoch_smooth","volume_sma","sr_lookback","pivot",
     "buy_threshold","sell_threshold","min_confirmation","minimum_rr"];
-  const payload = {};
+  const payload = {
+    telegram_enabled: !!document.getElementById("telegram_enabled")?.checked,};
   ids.forEach(k => {
     const el = document.getElementById(k);
     if (!el) return;

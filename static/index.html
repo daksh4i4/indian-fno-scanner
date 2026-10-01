@@ -2,43 +2,704 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+    <meta
+        name="viewport"
+        content="width=device-width, initial-scale=1.0"
+    >
 
     <title>Indian F&O Scanner</title>
 
-    <meta
-        name="description"
-        content="Live NSE F&O stock scanner powered by Groww API"
-    >
+    <!-- IMPORTANT:
+         FastAPI mounts the static folder at "/",
+         so these paths must NOT contain /static/
+    -->
+    <link rel="stylesheet" href="/style.css">
 
-    <link rel="stylesheet" href="/static/style.css">
+    <style>
+        /* =====================================================
+           FALLBACK PROFESSIONAL STYLE
+           This keeps the dashboard styled even if style.css
+           temporarily fails to load.
+           ===================================================== */
+
+        :root {
+            --bg: #f4f7fb;
+            --card: #ffffff;
+            --border: #e3e8ef;
+            --text: #172033;
+            --muted: #718096;
+            --blue: #2563eb;
+            --blue-dark: #1d4ed8;
+            --green: #16a34a;
+            --red: #dc2626;
+            --orange: #ea580c;
+            --gray: #64748b;
+            --shadow: 0 8px 25px rgba(15, 23, 42, 0.07);
+            --radius: 14px;
+        }
+
+        * {
+            box-sizing: border-box;
+        }
+
+        html,
+        body {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            min-height: 100%;
+            font-family:
+                Inter,
+                -apple-system,
+                BlinkMacSystemFont,
+                "Segoe UI",
+                Roboto,
+                Arial,
+                sans-serif;
+            background: var(--bg);
+            color: var(--text);
+        }
+
+        body {
+            min-height: 100vh;
+        }
+
+        button,
+        input,
+        select {
+            font: inherit;
+        }
+
+        button {
+            cursor: pointer;
+        }
+
+        .app-shell {
+            width: 100%;
+            min-height: 100vh;
+        }
+
+        /* =====================================================
+           HEADER
+           ===================================================== */
+
+        .topbar {
+            position: sticky;
+            top: 0;
+            z-index: 100;
+            background: rgba(255, 255, 255, 0.96);
+            backdrop-filter: blur(12px);
+            border-bottom: 1px solid var(--border);
+        }
+
+        .topbar-inner {
+            max-width: 1500px;
+            margin: 0 auto;
+            padding: 18px 24px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 20px;
+        }
+
+        .brand {
+            display: flex;
+            align-items: center;
+            gap: 13px;
+        }
+
+        .brand-logo {
+            width: 44px;
+            height: 44px;
+            border-radius: 12px;
+            background: linear-gradient(
+                135deg,
+                #2563eb,
+                #1e40af
+            );
+            color: white;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 21px;
+            font-weight: 800;
+            box-shadow: 0 6px 18px rgba(37, 99, 235, 0.25);
+        }
+
+        .brand-title {
+            margin: 0;
+            font-size: 20px;
+            line-height: 1.2;
+            font-weight: 800;
+            letter-spacing: -0.3px;
+        }
+
+        .brand-subtitle {
+            margin-top: 4px;
+            font-size: 12px;
+            color: var(--muted);
+        }
+
+        .connection-area {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .connection-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 8px 12px;
+            border: 1px solid var(--border);
+            border-radius: 999px;
+            background: #fff;
+            font-size: 12px;
+            font-weight: 700;
+        }
+
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: #94a3b8;
+        }
+
+        .status-dot.live {
+            background: var(--green);
+            box-shadow: 0 0 0 4px rgba(22, 163, 74, 0.12);
+        }
+
+        .status-dot.error {
+            background: var(--red);
+        }
+
+        /* =====================================================
+           MAIN
+           ===================================================== */
+
+        .main {
+            max-width: 1500px;
+            margin: 0 auto;
+            padding: 24px;
+        }
+
+        .page-heading {
+            margin-bottom: 22px;
+        }
+
+        .page-heading h1 {
+            margin: 0;
+            font-size: 27px;
+            letter-spacing: -0.7px;
+        }
+
+        .page-heading p {
+            margin: 7px 0 0;
+            color: var(--muted);
+            font-size: 14px;
+        }
+
+        /* =====================================================
+           STAT CARDS
+           ===================================================== */
+
+        .stats-grid {
+            display: grid;
+            grid-template-columns:
+                repeat(5, minmax(0, 1fr));
+            gap: 16px;
+            margin-bottom: 22px;
+        }
+
+        .stat-card {
+            background: var(--card);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            padding: 18px;
+            box-shadow: var(--shadow);
+            min-height: 118px;
+        }
+
+        .stat-top {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 10px;
+        }
+
+        .stat-label {
+            color: var(--muted);
+            font-size: 12px;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .stat-icon {
+            width: 34px;
+            height: 34px;
+            border-radius: 10px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: #eff6ff;
+            color: var(--blue);
+            font-weight: 800;
+        }
+
+        .stat-value {
+            margin-top: 15px;
+            font-size: 27px;
+            line-height: 1;
+            font-weight: 800;
+            letter-spacing: -0.5px;
+        }
+
+        .stat-value.buy {
+            color: var(--green);
+        }
+
+        .stat-value.sell {
+            color: var(--red);
+        }
+
+        .stat-value.wait {
+            color: var(--gray);
+        }
+
+        /* =====================================================
+           CARDS
+           ===================================================== */
+
+        .card {
+            background: var(--card);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            box-shadow: var(--shadow);
+            overflow: hidden;
+        }
+
+        .card-header {
+            padding: 18px 20px;
+            border-bottom: 1px solid var(--border);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 15px;
+        }
+
+        .card-title {
+            margin: 0;
+            font-size: 16px;
+            font-weight: 800;
+        }
+
+        .card-description {
+            margin: 4px 0 0;
+            font-size: 12px;
+            color: var(--muted);
+        }
+
+        .card-body {
+            padding: 20px;
+        }
+
+        /* =====================================================
+           STATUS PANEL
+           ===================================================== */
+
+        .status-grid {
+            display: grid;
+            grid-template-columns:
+                repeat(4, minmax(0, 1fr));
+            gap: 12px;
+        }
+
+        .status-item {
+            padding: 14px;
+            border: 1px solid var(--border);
+            border-radius: 11px;
+            background: #f8fafc;
+        }
+
+        .status-item-label {
+            color: var(--muted);
+            font-size: 11px;
+            text-transform: uppercase;
+            font-weight: 700;
+            letter-spacing: 0.4px;
+        }
+
+        .status-item-value {
+            margin-top: 7px;
+            font-size: 14px;
+            font-weight: 800;
+        }
+
+        /* =====================================================
+           SETTINGS
+           ===================================================== */
+
+        .settings-grid {
+            display: grid;
+            grid-template-columns:
+                repeat(4, minmax(0, 1fr));
+            gap: 16px;
+        }
+
+        .field {
+            display: flex;
+            flex-direction: column;
+            gap: 7px;
+        }
+
+        .field label {
+            font-size: 12px;
+            font-weight: 700;
+            color: #475569;
+        }
+
+        .field input,
+        .field select {
+            width: 100%;
+            min-height: 40px;
+            padding: 9px 11px;
+            border: 1px solid #d5dce5;
+            border-radius: 9px;
+            background: #fff;
+            color: var(--text);
+            outline: none;
+            transition: 0.15s ease;
+        }
+
+        .field input:focus,
+        .field select:focus {
+            border-color: var(--blue);
+            box-shadow:
+                0 0 0 3px rgba(37, 99, 235, 0.10);
+        }
+
+        .settings-actions {
+            margin-top: 20px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            flex-wrap: wrap;
+        }
+
+        .btn {
+            border: 0;
+            border-radius: 9px;
+            padding: 10px 16px;
+            font-weight: 750;
+            font-size: 13px;
+        }
+
+        .btn-primary {
+            background: var(--blue);
+            color: white;
+        }
+
+        .btn-primary:hover {
+            background: var(--blue-dark);
+        }
+
+        .btn-secondary {
+            background: #eef2f7;
+            color: #334155;
+        }
+
+        .btn-secondary:hover {
+            background: #e2e8f0;
+        }
+
+        /* =====================================================
+           SCANNER
+           ===================================================== */
+
+        .scanner-toolbar {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            flex-wrap: wrap;
+        }
+
+        .search-box {
+            min-width: 210px;
+            padding: 9px 12px;
+            border: 1px solid #d5dce5;
+            border-radius: 9px;
+            outline: none;
+        }
+
+        .search-box:focus {
+            border-color: var(--blue);
+        }
+
+        .filter-select {
+            padding: 9px 12px;
+            border: 1px solid #d5dce5;
+            border-radius: 9px;
+            background: white;
+        }
+
+        .table-wrapper {
+            width: 100%;
+            overflow-x: auto;
+        }
+
+        .scanner-table {
+            width: 100%;
+            border-collapse: collapse;
+            min-width: 1050px;
+        }
+
+        .scanner-table th {
+            text-align: left;
+            padding: 13px 12px;
+            background: #f8fafc;
+            border-bottom: 1px solid var(--border);
+            color: #64748b;
+            font-size: 11px;
+            text-transform: uppercase;
+            letter-spacing: 0.4px;
+            white-space: nowrap;
+        }
+
+        .scanner-table td {
+            padding: 14px 12px;
+            border-bottom: 1px solid #edf1f5;
+            font-size: 13px;
+            white-space: nowrap;
+        }
+
+        .scanner-table tbody tr:hover {
+            background: #f8fbff;
+        }
+
+        .symbol {
+            font-weight: 800;
+            color: #172033;
+        }
+
+        .signal-badge {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            min-width: 65px;
+            padding: 6px 10px;
+            border-radius: 999px;
+            font-size: 11px;
+            font-weight: 800;
+        }
+
+        .signal-buy {
+            background: #dcfce7;
+            color: #15803d;
+        }
+
+        .signal-sell {
+            background: #fee2e2;
+            color: #b91c1c;
+        }
+
+        .signal-wait {
+            background: #f1f5f9;
+            color: #64748b;
+        }
+
+        .score {
+            font-weight: 800;
+        }
+
+        .positive {
+            color: var(--green);
+        }
+
+        .negative {
+            color: var(--red);
+        }
+
+        /* =====================================================
+           LOADING / EMPTY
+           ===================================================== */
+
+        .empty-state {
+            text-align: center;
+            padding: 45px 20px;
+            color: var(--muted);
+        }
+
+        .empty-icon {
+            font-size: 30px;
+            margin-bottom: 10px;
+        }
+
+        .loading-line {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .spinner {
+            width: 15px;
+            height: 15px;
+            border: 2px solid #dbe4ef;
+            border-top-color: var(--blue);
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+        }
+
+        @keyframes spin {
+            to {
+                transform: rotate(360deg);
+            }
+        }
+
+        /* =====================================================
+           FOOTER
+           ===================================================== */
+
+        .footer {
+            max-width: 1500px;
+            margin: 0 auto;
+            padding: 0 24px 25px;
+            color: var(--muted);
+            font-size: 11px;
+        }
+
+        /* =====================================================
+           RESPONSIVE
+           ===================================================== */
+
+        @media (max-width: 1200px) {
+
+            .stats-grid {
+                grid-template-columns:
+                    repeat(3, minmax(0, 1fr));
+            }
+
+            .settings-grid {
+                grid-template-columns:
+                    repeat(3, minmax(0, 1fr));
+            }
+
+            .status-grid {
+                grid-template-columns:
+                    repeat(2, minmax(0, 1fr));
+            }
+        }
+
+        @media (max-width: 800px) {
+
+            .topbar-inner {
+                padding: 14px 16px;
+            }
+
+            .main {
+                padding: 16px;
+            }
+
+            .stats-grid {
+                grid-template-columns:
+                    repeat(2, minmax(0, 1fr));
+            }
+
+            .settings-grid {
+                grid-template-columns:
+                    repeat(2, minmax(0, 1fr));
+            }
+
+            .brand-title {
+                font-size: 17px;
+            }
+
+            .connection-area {
+                display: none;
+            }
+        }
+
+        @media (max-width: 520px) {
+
+            .stats-grid {
+                grid-template-columns: 1fr;
+            }
+
+            .settings-grid {
+                grid-template-columns: 1fr;
+            }
+
+            .status-grid {
+                grid-template-columns: 1fr;
+            }
+
+            .page-heading h1 {
+                font-size: 23px;
+            }
+
+            .card-header {
+                align-items: flex-start;
+                flex-direction: column;
+            }
+
+            .scanner-toolbar {
+                width: 100%;
+            }
+
+            .search-box {
+                width: 100%;
+            }
+        }
+    </style>
 </head>
 
 <body>
 
-<div class="app">
+<div class="app-shell">
 
-    <!-- HEADER -->
+    <!-- =====================================================
+         TOP BAR
+         ===================================================== -->
+
     <header class="topbar">
 
-        <div class="brand">
-            <div class="brand-icon">🇮🇳</div>
+        <div class="topbar-inner">
 
-            <div>
-                <h1>Indian F&O Scanner</h1>
-                <p>Professional NSE Market Scanner</p>
+            <div class="brand">
+
+                <div class="brand-logo">
+                    ₹
+                </div>
+
+                <div>
+                    <h1 class="brand-title">
+                        Indian F&O Scanner
+                    </h1>
+
+                    <div class="brand-subtitle">
+                        Professional NSE Market Scanner
+                    </div>
+                </div>
+
             </div>
-        </div>
 
-        <div class="connection-area">
+            <div class="connection-area">
 
-            <div class="connection-status">
-                <span id="statusDot" class="status-dot offline"></span>
-                <span id="statusText">Connecting...</span>
-            </div>
+                <div class="connection-badge">
 
-            <div id="lastUpdate" class="last-update">
-                --
+                    <span
+                        id="connectionDot"
+                        class="status-dot"
+                    ></span>
+
+                    <span id="connectionText">
+                        Connecting...
+                    </span>
+
+                </div>
+
             </div>
 
         </div>
@@ -46,414 +707,789 @@
     </header>
 
 
-    <!-- MAIN -->
-    <main class="container">
+    <!-- =====================================================
+         MAIN
+         ===================================================== -->
 
-        <!-- SUMMARY CARDS -->
-        <section class="summary-grid">
+    <main class="main">
 
-            <div class="summary-card">
-                <div class="summary-label">F&O Stocks</div>
-                <div id="totalStocks" class="summary-value">0</div>
-                <div class="summary-sub">NSE F&O Universe</div>
+        <section class="page-heading">
+
+            <h1>
+                Market Scanner
+            </h1>
+
+            <p>
+                NSE F&O stocks with technical confirmation,
+                multi-timeframe trend analysis and risk/reward.
+            </p>
+
+        </section>
+
+
+        <!-- =================================================
+             STAT CARDS
+             ================================================= -->
+
+        <section class="stats-grid">
+
+            <div class="stat-card">
+
+                <div class="stat-top">
+
+                    <div class="stat-label">
+                        F&O Stocks
+                    </div>
+
+                    <div class="stat-icon">
+                        ₹
+                    </div>
+
+                </div>
+
+                <div
+                    id="fnoStocks"
+                    class="stat-value"
+                >
+                    0
+                </div>
+
             </div>
 
-            <div class="summary-card buy-card">
-                <div class="summary-label">BUY</div>
-                <div id="buyCount" class="summary-value">0</div>
-                <div class="summary-sub">Active signals</div>
+
+            <div class="stat-card">
+
+                <div class="stat-top">
+
+                    <div class="stat-label">
+                        BUY Signals
+                    </div>
+
+                    <div class="stat-icon">
+                        ↑
+                    </div>
+
+                </div>
+
+                <div
+                    id="buySignals"
+                    class="stat-value buy"
+                >
+                    0
+                </div>
+
             </div>
 
-            <div class="summary-card sell-card">
-                <div class="summary-label">SELL</div>
-                <div id="sellCount" class="summary-value">0</div>
-                <div class="summary-sub">Active signals</div>
+
+            <div class="stat-card">
+
+                <div class="stat-top">
+
+                    <div class="stat-label">
+                        SELL Signals
+                    </div>
+
+                    <div class="stat-icon">
+                        ↓
+                    </div>
+
+                </div>
+
+                <div
+                    id="sellSignals"
+                    class="stat-value sell"
+                >
+                    0
+                </div>
+
             </div>
 
-            <div class="summary-card wait-card">
-                <div class="summary-label">WAIT</div>
-                <div id="waitCount" class="summary-value">0</div>
-                <div class="summary-sub">No confirmed signal</div>
+
+            <div class="stat-card">
+
+                <div class="stat-top">
+
+                    <div class="stat-label">
+                        WAIT
+                    </div>
+
+                    <div class="stat-icon">
+                        •
+                    </div>
+
+                </div>
+
+                <div
+                    id="waitSignals"
+                    class="stat-value wait"
+                >
+                    0
+                </div>
+
+            </div>
+
+
+            <div class="stat-card">
+
+                <div class="stat-top">
+
+                    <div class="stat-label">
+                        Live Prices
+                    </div>
+
+                    <div class="stat-icon">
+                        ●
+                    </div>
+
+                </div>
+
+                <div
+                    id="livePrices"
+                    class="stat-value"
+                >
+                    0
+                </div>
+
             </div>
 
         </section>
 
 
-        <!-- DATA STATUS -->
-        <section class="data-status-card">
+        <!-- =================================================
+             SYSTEM STATUS
+             ================================================= -->
 
-            <div>
-                <div class="section-title">Market Data</div>
+        <section
+            class="card"
+            style="margin-bottom:22px;"
+        >
 
-                <div id="historyStatus">
-                    Historical candles loading...
-                </div>
-            </div>
-
-            <div class="data-status-right">
-
-                <div class="mini-status">
-                    <span class="mini-label">Data</span>
-                    <span id="dataStatus">--</span>
-                </div>
-
-                <div class="mini-status">
-                    <span class="mini-label">Stocks</span>
-                    <span id="loadedStocks">0</span>
-                </div>
-
-            </div>
-
-        </section>
-
-
-        <!-- STRATEGY SETTINGS -->
-        <section class="panel">
-
-            <div class="panel-header">
+            <div class="card-header">
 
                 <div>
-                    <h2>Strategy Settings</h2>
-                    <p>Configure scanner parameters</p>
-                </div>
 
-                <button id="resetSettings" class="secondary-button">
-                    Reset
-                </button>
+                    <h2 class="card-title">
+                        System Status
+                    </h2>
 
-            </div>
+                    <p class="card-description">
+                        Live connection and scanner information
+                    </p>
 
-
-            <div class="settings-grid">
-
-                <div class="setting-group">
-                    <label for="entryTimeframe">
-                        Entry Timeframe
-                    </label>
-
-                    <select id="entryTimeframe">
-                        <option value="1m">1 Minute</option>
-                        <option value="2m">2 Minutes</option>
-                        <option value="3m">3 Minutes</option>
-                        <option value="5m" selected>5 Minutes</option>
-                        <option value="10m">10 Minutes</option>
-                        <option value="15m">15 Minutes</option>
-                        <option value="30m">30 Minutes</option>
-                        <option value="1h">1 Hour</option>
-                        <option value="4h">4 Hours</option>
-                        <option value="1d">1 Day</option>
-                        <option value="1w">1 Week</option>
-                    </select>
-                </div>
-
-
-                <div class="setting-group">
-                    <label for="waveTimeframe">
-                        Wave Timeframe
-                    </label>
-
-                    <select id="waveTimeframe">
-                        <option value="1m">1 Minute</option>
-                        <option value="2m">2 Minutes</option>
-                        <option value="3m">3 Minutes</option>
-                        <option value="5m">5 Minutes</option>
-                        <option value="10m">10 Minutes</option>
-                        <option value="15m" selected>15 Minutes</option>
-                        <option value="30m">30 Minutes</option>
-                        <option value="1h">1 Hour</option>
-                        <option value="4h">4 Hours</option>
-                        <option value="1d">1 Day</option>
-                        <option value="1w">1 Week</option>
-                    </select>
-                </div>
-
-
-                <div class="setting-group">
-                    <label for="tideTimeframe">
-                        Tide Timeframe
-                    </label>
-
-                    <select id="tideTimeframe">
-                        <option value="1m">1 Minute</option>
-                        <option value="2m">2 Minutes</option>
-                        <option value="3m">3 Minutes</option>
-                        <option value="5m">5 Minutes</option>
-                        <option value="10m">10 Minutes</option>
-                        <option value="15m">15 Minutes</option>
-                        <option value="30m">30 Minutes</option>
-                        <option value="1h" selected>1 Hour</option>
-                        <option value="4h">4 Hours</option>
-                        <option value="1d">1 Day</option>
-                        <option value="1w">1 Week</option>
-                    </select>
-                </div>
-
-
-                <div class="setting-group">
-                    <label for="emaFast">
-                        EMA Fast
-                    </label>
-
-                    <input
-                        id="emaFast"
-                        type="number"
-                        min="1"
-                        value="9"
-                    >
-                </div>
-
-
-                <div class="setting-group">
-                    <label for="emaMedium">
-                        EMA Medium
-                    </label>
-
-                    <input
-                        id="emaMedium"
-                        type="number"
-                        min="1"
-                        value="20"
-                    >
-                </div>
-
-
-                <div class="setting-group">
-                    <label for="emaSlow">
-                        EMA Slow
-                    </label>
-
-                    <input
-                        id="emaSlow"
-                        type="number"
-                        min="1"
-                        value="50"
-                    >
-                </div>
-
-
-                <div class="setting-group">
-                    <label for="rsiPeriod">
-                        RSI Period
-                    </label>
-
-                    <input
-                        id="rsiPeriod"
-                        type="number"
-                        min="2"
-                        value="14"
-                    >
-                </div>
-
-
-                <div class="setting-group">
-                    <label for="macdFast">
-                        MACD Fast
-                    </label>
-
-                    <input
-                        id="macdFast"
-                        type="number"
-                        min="1"
-                        value="12"
-                    >
-                </div>
-
-
-                <div class="setting-group">
-                    <label for="macdSlow">
-                        MACD Slow
-                    </label>
-
-                    <input
-                        id="macdSlow"
-                        type="number"
-                        min="2"
-                        value="26"
-                    >
-                </div>
-
-
-                <div class="setting-group">
-                    <label for="macdSignal">
-                        MACD Signal
-                    </label>
-
-                    <input
-                        id="macdSignal"
-                        type="number"
-                        min="1"
-                        value="9"
-                    >
-                </div>
-
-
-                <div class="setting-group">
-                    <label for="stochPeriod">
-                        Stochastic Period
-                    </label>
-
-                    <input
-                        id="stochPeriod"
-                        type="number"
-                        min="2"
-                        value="14"
-                    >
-                </div>
-
-
-                <div class="setting-group">
-                    <label for="stochSmooth">
-                        Stochastic Smooth
-                    </label>
-
-                    <input
-                        id="stochSmooth"
-                        type="number"
-                        min="1"
-                        value="3"
-                    >
-                </div>
-
-
-                <div class="setting-group">
-                    <label for="volumePeriod">
-                        Volume SMA
-                    </label>
-
-                    <input
-                        id="volumePeriod"
-                        type="number"
-                        min="1"
-                        value="20"
-                    >
-                </div>
-
-
-                <div class="setting-group">
-                    <label for="srLookback">
-                        S/R Lookback
-                    </label>
-
-                    <input
-                        id="srLookback"
-                        type="number"
-                        min="10"
-                        value="160"
-                    >
-                </div>
-
-
-                <div class="setting-group">
-                    <label for="pivot">
-                        Pivot
-                    </label>
-
-                    <input
-                        id="pivot"
-                        type="number"
-                        min="1"
-                        value="3"
-                    >
-                </div>
-
-
-                <div class="setting-group">
-                    <label for="minConfirmation">
-                        Min Confirmation
-                    </label>
-
-                    <input
-                        id="minConfirmation"
-                        type="number"
-                        min="1"
-                        value="7"
-                    >
-                </div>
-
-
-                <div class="setting-group">
-                    <label for="riskReward">
-                        Risk / Reward
-                    </label>
-
-                    <input
-                        id="riskReward"
-                        type="number"
-                        min="0.5"
-                        step="0.5"
-                        value="2"
-                    >
-                </div>
-
-
-                <div class="setting-group">
-                    <label for="buyThreshold">
-                        BUY Score
-                    </label>
-
-                    <input
-                        id="buyThreshold"
-                        type="number"
-                        min="1"
-                        max="100"
-                        value="70"
-                    >
-                </div>
-
-
-                <div class="setting-group">
-                    <label for="sellThreshold">
-                        SELL Score
-                    </label>
-
-                    <input
-                        id="sellThreshold"
-                        type="number"
-                        min="0"
-                        max="99"
-                        value="30"
-                    >
                 </div>
 
             </div>
 
 
-            <div class="settings-actions">
+            <div class="card-body">
 
-                <button id="applySettings" class="primary-button">
-                    Apply Settings
-                </button>
+                <div class="status-grid">
 
-                <span id="settingsMessage"></span>
+                    <div class="status-item">
+
+                        <div class="status-item-label">
+                            Market Status
+                        </div>
+
+                        <div
+                            id="marketStatus"
+                            class="status-item-value"
+                        >
+                            Connecting...
+                        </div>
+
+                    </div>
+
+
+                    <div class="status-item">
+
+                        <div class="status-item-label">
+                            NSE F&O Universe
+                        </div>
+
+                        <div
+                            id="universeStatus"
+                            class="status-item-value"
+                        >
+                            0 stocks
+                        </div>
+
+                    </div>
+
+
+                    <div class="status-item">
+
+                        <div class="status-item-label">
+                            Historical Data
+                        </div>
+
+                        <div
+                            id="historyStatus"
+                            class="status-item-value"
+                        >
+                            Loading...
+                        </div>
+
+                    </div>
+
+
+                    <div class="status-item">
+
+                        <div class="status-item-label">
+                            Last Update
+                        </div>
+
+                        <div
+                            id="lastUpdate"
+                            class="status-item-value"
+                        >
+                            --
+                        </div>
+
+                    </div>
+
+                </div>
+
+                <div
+                    id="errorMessage"
+                    style="
+                        display:none;
+                        margin-top:14px;
+                        padding:12px 14px;
+                        border-radius:9px;
+                        background:#fff1f2;
+                        border:1px solid #fecdd3;
+                        color:#be123c;
+                        font-size:12px;
+                        font-weight:600;
+                    "
+                ></div>
 
             </div>
 
         </section>
 
 
-        <!-- SCANNER TABLE -->
-        <section class="panel">
+        <!-- =================================================
+             STRATEGY SETTINGS
+             ================================================= -->
 
-            <div class="panel-header">
+        <section
+            class="card"
+            style="margin-bottom:22px;"
+        >
+
+            <div class="card-header">
 
                 <div>
-                    <h2>Live F&O Scanner</h2>
-                    <p>
+
+                    <h2 class="card-title">
+                        Strategy Settings
+                    </h2>
+
+                    <p class="card-description">
+                        Configure scanner parameters
+                    </p>
+
+                </div>
+
+            </div>
+
+
+            <div class="card-body">
+
+                <div class="settings-grid">
+
+                    <!-- ENTRY -->
+
+                    <div class="field">
+
+                        <label for="entryTimeframe">
+                            Entry Timeframe
+                        </label>
+
+                        <select
+                            id="entryTimeframe"
+                            name="entry_timeframe"
+                        >
+                            <option value="1m">
+                                1 Minute
+                            </option>
+
+                            <option value="5m" selected>
+                                5 Minutes
+                            </option>
+
+                            <option value="15m">
+                                15 Minutes
+                            </option>
+
+                            <option value="30m">
+                                30 Minutes
+                            </option>
+
+                            <option value="1h">
+                                1 Hour
+                            </option>
+
+                            <option value="1d">
+                                1 Day
+                            </option>
+                        </select>
+
+                    </div>
+
+
+                    <!-- WAVE -->
+
+                    <div class="field">
+
+                        <label for="waveTimeframe">
+                            Wave Timeframe
+                        </label>
+
+                        <select
+                            id="waveTimeframe"
+                            name="wave_timeframe"
+                        >
+
+                            <option value="5m">
+                                5 Minutes
+                            </option>
+
+                            <option value="15m" selected>
+                                15 Minutes
+                            </option>
+
+                            <option value="30m">
+                                30 Minutes
+                            </option>
+
+                            <option value="1h">
+                                1 Hour
+                            </option>
+
+                            <option value="4h">
+                                4 Hours
+                            </option>
+
+                        </select>
+
+                    </div>
+
+
+                    <!-- TIDE -->
+
+                    <div class="field">
+
+                        <label for="tideTimeframe">
+                            Tide Timeframe
+                        </label>
+
+                        <select
+                            id="tideTimeframe"
+                            name="tide_timeframe"
+                        >
+
+                            <option value="15m">
+                                15 Minutes
+                            </option>
+
+                            <option value="30m">
+                                30 Minutes
+                            </option>
+
+                            <option value="1h" selected>
+                                1 Hour
+                            </option>
+
+                            <option value="4h">
+                                4 Hours
+                            </option>
+
+                            <option value="1d">
+                                1 Day
+                            </option>
+
+                        </select>
+
+                    </div>
+
+
+                    <!-- EMA FAST -->
+
+                    <div class="field">
+
+                        <label for="emaFast">
+                            EMA Fast
+                        </label>
+
+                        <input
+                            id="emaFast"
+                            name="ema_fast"
+                            type="number"
+                            value="9"
+                        >
+
+                    </div>
+
+
+                    <!-- EMA MEDIUM -->
+
+                    <div class="field">
+
+                        <label for="emaMedium">
+                            EMA Medium
+                        </label>
+
+                        <input
+                            id="emaMedium"
+                            name="ema_medium"
+                            type="number"
+                            value="20"
+                        >
+
+                    </div>
+
+
+                    <!-- EMA SLOW -->
+
+                    <div class="field">
+
+                        <label for="emaSlow">
+                            EMA Slow
+                        </label>
+
+                        <input
+                            id="emaSlow"
+                            name="ema_slow"
+                            type="number"
+                            value="50"
+                        >
+
+                    </div>
+
+
+                    <!-- RSI -->
+
+                    <div class="field">
+
+                        <label for="rsiPeriod">
+                            RSI Period
+                        </label>
+
+                        <input
+                            id="rsiPeriod"
+                            name="rsi_period"
+                            type="number"
+                            value="14"
+                        >
+
+                    </div>
+
+
+                    <!-- MACD FAST -->
+
+                    <div class="field">
+
+                        <label for="macdFast">
+                            MACD Fast
+                        </label>
+
+                        <input
+                            id="macdFast"
+                            name="macd_fast"
+                            type="number"
+                            value="12"
+                        >
+
+                    </div>
+
+
+                    <!-- MACD SLOW -->
+
+                    <div class="field">
+
+                        <label for="macdSlow">
+                            MACD Slow
+                        </label>
+
+                        <input
+                            id="macdSlow"
+                            name="macd_slow"
+                            type="number"
+                            value="26"
+                        >
+
+                    </div>
+
+
+                    <!-- MACD SIGNAL -->
+
+                    <div class="field">
+
+                        <label for="macdSignal">
+                            MACD Signal
+                        </label>
+
+                        <input
+                            id="macdSignal"
+                            name="macd_signal"
+                            type="number"
+                            value="9"
+                        >
+
+                    </div>
+
+
+                    <!-- STOCHASTIC PERIOD -->
+
+                    <div class="field">
+
+                        <label for="stochasticPeriod">
+                            Stochastic Period
+                        </label>
+
+                        <input
+                            id="stochasticPeriod"
+                            name="stochastic_period"
+                            type="number"
+                            value="14"
+                        >
+
+                    </div>
+
+
+                    <!-- STOCHASTIC SMOOTH -->
+
+                    <div class="field">
+
+                        <label for="stochasticSmooth">
+                            Stochastic Smooth
+                        </label>
+
+                        <input
+                            id="stochasticSmooth"
+                            name="stochastic_smooth"
+                            type="number"
+                            value="3"
+                        >
+
+                    </div>
+
+
+                    <!-- VOLUME SMA -->
+
+                    <div class="field">
+
+                        <label for="volumeSma">
+                            Volume SMA
+                        </label>
+
+                        <input
+                            id="volumeSma"
+                            name="volume_sma"
+                            type="number"
+                            value="20"
+                        >
+
+                    </div>
+
+
+                    <!-- S/R -->
+
+                    <div class="field">
+
+                        <label for="srLookback">
+                            S/R Lookback
+                        </label>
+
+                        <input
+                            id="srLookback"
+                            name="sr_lookback"
+                            type="number"
+                            value="160"
+                        >
+
+                    </div>
+
+
+                    <!-- PIVOT -->
+
+                    <div class="field">
+
+                        <label for="pivot">
+                            Pivot
+                        </label>
+
+                        <input
+                            id="pivot"
+                            name="pivot"
+                            type="number"
+                            value="3"
+                        >
+
+                    </div>
+
+
+                    <!-- CONFIRMATION -->
+
+                    <div class="field">
+
+                        <label for="minConfirmation">
+                            Min Confirmation
+                        </label>
+
+                        <input
+                            id="minConfirmation"
+                            name="min_confirmation"
+                            type="number"
+                            value="7"
+                        >
+
+                    </div>
+
+
+                    <!-- RR -->
+
+                    <div class="field">
+
+                        <label for="riskReward">
+                            Risk / Reward
+                        </label>
+
+                        <input
+                            id="riskReward"
+                            name="risk_reward"
+                            type="number"
+                            step="0.1"
+                            value="2"
+                        >
+
+                    </div>
+
+
+                    <!-- BUY SCORE -->
+
+                    <div class="field">
+
+                        <label for="buyScore">
+                            BUY Score
+                        </label>
+
+                        <input
+                            id="buyScore"
+                            name="buy_score"
+                            type="number"
+                            value="70"
+                        >
+
+                    </div>
+
+
+                    <!-- SELL SCORE -->
+
+                    <div class="field">
+
+                        <label for="sellScore">
+                            SELL Score
+                        </label>
+
+                        <input
+                            id="sellScore"
+                            name="sell_score"
+                            type="number"
+                            value="30"
+                        >
+
+                    </div>
+
+                </div>
+
+
+                <div class="settings-actions">
+
+                    <button
+                        id="resetSettings"
+                        type="button"
+                        class="btn btn-secondary"
+                    >
+                        Reset
+                    </button>
+
+                    <button
+                        id="applySettings"
+                        type="button"
+                        class="btn btn-primary"
+                    >
+                        Apply Settings
+                    </button>
+
+                    <span
+                        id="settingsMessage"
+                        style="
+                            font-size:12px;
+                            color:#64748b;
+                        "
+                    ></span>
+
+                </div>
+
+            </div>
+
+        </section>
+
+
+        <!-- =================================================
+             LIVE SCANNER
+             ================================================= -->
+
+        <section class="card">
+
+            <div class="card-header">
+
+                <div>
+
+                    <h2 class="card-title">
+                        Live F&O Scanner
+                    </h2>
+
+                    <p class="card-description">
                         NSE F&O stocks with technical confirmation
                     </p>
+
                 </div>
 
-                <div class="table-controls">
 
-                    <select id="signalFilter">
-                        <option value="ALL">All</option>
-                        <option value="BUY">BUY</option>
-                        <option value="SELL">SELL</option>
-                        <option value="WAIT">WAIT</option>
+                <div class="scanner-toolbar">
+
+                    <select
+                        id="signalFilter"
+                        class="filter-select"
+                    >
+
+                        <option value="ALL">
+                            All
+                        </option>
+
+                        <option value="BUY">
+                            BUY
+                        </option>
+
+                        <option value="SELL">
+                            SELL
+                        </option>
+
+                        <option value="WAIT">
+                            WAIT
+                        </option>
+
                     </select>
 
+
                     <input
-                        id="searchStock"
+                        id="stockSearch"
+                        class="search-box"
                         type="search"
                         placeholder="Search stock..."
                     >
@@ -465,38 +1501,106 @@
 
             <div class="table-wrapper">
 
-                <table>
+                <table class="scanner-table">
 
                     <thead>
 
                         <tr>
-                            <th>#</th>
-                            <th>Stock</th>
-                            <th>LTP</th>
-                            <th>Change</th>
-                            <th>Wave</th>
-                            <th>Tide</th>
-                            <th>EMA</th>
-                            <th>RSI</th>
-                            <th>MACD</th>
-                            <th>Volume</th>
-                            <th>Support</th>
-                            <th>Resistance</th>
-                            <th>Score</th>
-                            <th>Signal</th>
-                            <th>SL</th>
-                            <th>Target</th>
-                            <th>RR</th>
+
+                            <th>
+                                #
+                            </th>
+
+                            <th>
+                                Stock
+                            </th>
+
+                            <th>
+                                LTP
+                            </th>
+
+                            <th>
+                                Change
+                            </th>
+
+                            <th>
+                                Wave
+                            </th>
+
+                            <th>
+                                Tide
+                            </th>
+
+                            <th>
+                                EMA
+                            </th>
+
+                            <th>
+                                RSI
+                            </th>
+
+                            <th>
+                                MACD
+                            </th>
+
+                            <th>
+                                Volume
+                            </th>
+
+                            <th>
+                                Support
+                            </th>
+
+                            <th>
+                                Resistance
+                            </th>
+
+                            <th>
+                                Score
+                            </th>
+
+                            <th>
+                                Signal
+                            </th>
+
+                            <th>
+                                SL
+                            </th>
+
+                            <th>
+                                Target
+                            </th>
+
+                            <th>
+                                RR
+                            </th>
+
                         </tr>
 
                     </thead>
 
+
                     <tbody id="scannerBody">
 
                         <tr>
-                            <td colspan="17" class="empty-state">
-                                Loading scanner data...
+
+                            <td
+                                colspan="17"
+                                class="empty-state"
+                            >
+
+                                <div class="loading-line">
+
+                                    <span class="spinner"></span>
+
+                                    <span>
+                                        Loading scanner data...
+                                    </span>
+
+                                </div>
+
                             </td>
+
                         </tr>
 
                     </tbody>
@@ -507,26 +1611,32 @@
 
         </section>
 
-
-        <!-- FOOTER -->
-        <footer>
-
-            <div>
-                Indian F&O Scanner
-            </div>
-
-            <div>
-                Market analysis tool • No automatic order placement
-            </div>
-
-        </footer>
-
     </main>
+
+
+    <!-- =====================================================
+         FOOTER
+         ===================================================== -->
+
+    <footer class="footer">
+
+        Indian F&O Scanner • Market analysis tool •
+        No automatic order placement
+
+    </footer>
 
 </div>
 
 
-<script src="/static/app.js"></script>
+<!-- =========================================================
+     APP JAVASCRIPT
+
+     IMPORTANT:
+     Because FastAPI mounts "static" at "/",
+     the correct file is /app.js
+     ========================================================= -->
+
+<script src="/app.js"></script>
 
 </body>
 </html>

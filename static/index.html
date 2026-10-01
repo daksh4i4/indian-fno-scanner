@@ -1,34 +1,51 @@
 <!DOCTYPE html>
 <html lang="en">
-
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
 
-    <title>Indian F&O Scanner</title>
+    <meta
+        name="viewport"
+        content="width=device-width, initial-scale=1.0"
+    >
+
+    <meta
+        name="theme-color"
+        content="#0f172a"
+    >
 
     <meta
         name="description"
-        content="Professional Indian NSE F&O technical market scanner"
+        content="Professional Indian NSE F&O Technical Scanner"
     >
 
-    <link rel="stylesheet" href="/static/style.css">
+    <title>Indian F&O Scanner</title>
+
+    <!-- IMPORTANT:
+         FastAPI mounts /static at /
+         Therefore CSS is /style.css, NOT /static/style.css
+    -->
+    <link
+        rel="stylesheet"
+        href="/style.css?v=10"
+    >
 </head>
+
 
 <body>
 
 <div class="app-shell">
 
+
     <!-- =====================================================
-         HEADER
+         TOP HEADER
     ====================================================== -->
 
-    <header class="topbar">
+    <header class="top-header">
 
         <div class="brand-section">
 
             <div class="brand-icon">
-                📡
+                📊
             </div>
 
             <div>
@@ -38,7 +55,7 @@
                 </h1>
 
                 <p>
-                    Professional NSE Market Scanner
+                    Professional NSE Technical Market Scanner
                 </p>
 
             </div>
@@ -46,23 +63,27 @@
         </div>
 
 
-        <div class="header-status">
-
-            <div
-                id="connectionStatus"
-                class="status-pill status-loading"
-            >
-                <span class="status-dot"></span>
-                <span id="connectionText">
-                    Connecting...
-                </span>
-            </div>
+        <div class="header-right">
 
             <div
                 id="marketStatus"
-                class="market-pill"
+                class="market-status market-closed"
             >
-                Market Data
+                ● Market Data
+            </div>
+
+
+            <div
+                id="connectionStatus"
+                class="connection-pill status-loading"
+            >
+
+                <span class="status-dot"></span>
+
+                <span id="connectionText">
+                    Connecting...
+                </span>
+
             </div>
 
         </div>
@@ -70,132 +91,135 @@
     </header>
 
 
+
     <!-- =====================================================
-         SUMMARY CARDS
+         ERROR MESSAGE
     ====================================================== -->
 
-    <section class="summary-grid">
+    <div
+        id="errorMessage"
+        class="error-message hidden"
+    ></div>
 
-        <!-- F&O STOCKS -->
 
-        <div class="summary-card">
 
-            <div class="summary-icon">
-                📊
+    <!-- =====================================================
+         STATUS CARDS
+    ====================================================== -->
+
+    <section class="stats-grid">
+
+
+        <div class="stat-card">
+
+            <div class="stat-icon blue">
+                📡
             </div>
 
-            <div class="summary-content">
+            <div class="stat-content">
 
-                <span class="summary-label">
+                <span class="stat-label">
+                    Scanner Status
+                </span>
+
+                <strong id="connectionCard">
+                    Live
+                </strong>
+
+            </div>
+
+        </div>
+
+
+
+        <div class="stat-card">
+
+            <div class="stat-icon purple">
+                📈
+            </div>
+
+            <div class="stat-content">
+
+                <span class="stat-label">
                     F&amp;O Stocks
                 </span>
 
-                <strong
-                    id="fnoStocks"
-                    class="summary-value"
-                >
+                <strong id="fnoStocks">
                     0
                 </strong>
-
-                <span class="summary-sub">
-                    NSE F&amp;O Universe
-                </span>
 
             </div>
 
         </div>
 
 
-        <!-- BUY -->
 
-        <div class="summary-card buy-card">
+        <div class="stat-card buy-card">
 
-            <div class="summary-icon">
+            <div class="stat-icon green">
                 ▲
             </div>
 
-            <div class="summary-content">
+            <div class="stat-content">
 
-                <span class="summary-label">
-                    BUY
+                <span class="stat-label">
+                    BUY Signals
                 </span>
 
-                <strong
-                    id="buyCount"
-                    class="summary-value"
-                >
+                <strong id="buyCount">
                     0
                 </strong>
-
-                <span class="summary-sub">
-                    Active signals
-                </span>
 
             </div>
 
         </div>
 
 
-        <!-- SELL -->
 
-        <div class="summary-card sell-card">
+        <div class="stat-card sell-card">
 
-            <div class="summary-icon">
+            <div class="stat-icon red">
                 ▼
             </div>
 
-            <div class="summary-content">
+            <div class="stat-content">
 
-                <span class="summary-label">
-                    SELL
+                <span class="stat-label">
+                    SELL Signals
                 </span>
 
-                <strong
-                    id="sellCount"
-                    class="summary-value"
-                >
+                <strong id="sellCount">
                     0
                 </strong>
-
-                <span class="summary-sub">
-                    Active signals
-                </span>
 
             </div>
 
         </div>
 
 
-        <!-- WAIT -->
 
-        <div class="summary-card wait-card">
+        <div class="stat-card">
 
-            <div class="summary-icon">
+            <div class="stat-icon orange">
                 ⏸
             </div>
 
-            <div class="summary-content">
+            <div class="stat-content">
 
-                <span class="summary-label">
+                <span class="stat-label">
                     WAIT
                 </span>
 
-                <strong
-                    id="waitCount"
-                    class="summary-value"
-                >
+                <strong id="waitCount">
                     0
                 </strong>
-
-                <span class="summary-sub">
-                    No confirmed signal
-                </span>
 
             </div>
 
         </div>
 
     </section>
+
 
 
     <!-- =====================================================
@@ -204,36 +228,37 @@
 
     <section class="data-status-card">
 
-        <div class="section-heading">
+        <div class="data-status-header">
 
             <div>
 
-                <h2>
+                <h3>
                     Market Data
-                </h2>
+                </h3>
 
                 <p>
-                    Live NSE F&amp;O technical data
+                    Live NSE market data and historical candle status
                 </p>
 
             </div>
+
 
             <div
                 id="lastUpdate"
                 class="last-update"
             >
-                Last update: —
+                Waiting for update...
             </div>
 
         </div>
 
 
-        <div class="progress-area">
+        <div class="progress-section">
 
-            <div class="progress-info">
+            <div class="progress-label">
 
                 <span>
-                    Historical candles
+                    Historical Candles
                 </span>
 
                 <strong id="historyProgress">
@@ -242,26 +267,21 @@
 
             </div>
 
+
             <div class="progress-track">
 
                 <div
                     id="historyProgressBar"
                     class="progress-bar"
-                    style="width: 0%"
+                    style="width:0%"
                 ></div>
 
             </div>
 
         </div>
 
-
-        <div
-            id="errorMessage"
-            class="error-message hidden"
-        >
-        </div>
-
     </section>
+
 
 
     <!-- =====================================================
@@ -269,6 +289,7 @@
     ====================================================== -->
 
     <section class="settings-card">
+
 
         <div class="section-header">
 
@@ -279,7 +300,7 @@
                 </h2>
 
                 <p>
-                    Configure scanner parameters
+                    Configure scanner parameters and confirmation logic
                 </p>
 
             </div>
@@ -287,760 +308,896 @@
         </div>
 
 
-        <div class="settings-body">
 
+        <!-- =================================================
+             TIMEFRAME
+        ================================================== -->
 
-            <!-- =================================================
-                 TIMEFRAMES
-            ================================================== -->
+        <div class="settings-group">
 
-            <div class="settings-group">
+            <div class="group-title">
 
-                <div class="settings-group-title">
-                    <span class="group-icon">⏱</span>
+                <span class="group-number">
+                    01
+                </span>
 
-                    <div>
-                        <h3>
-                            Timeframes
-                        </h3>
+                <div>
 
-                        <p>
-                            Wave and Tide market structure
-                        </p>
-                    </div>
-                </div>
+                    <h3>
+                        Timeframe
+                    </h3>
 
-
-                <div class="settings-grid two-columns">
-
-                    <div class="field">
-
-                        <label for="wave_timeframe">
-                            Wave Timeframe
-                        </label>
-
-                        <select id="wave_timeframe">
-
-                            <option value="5m">
-                                5 Minutes
-                            </option>
-
-                            <option value="15m" selected>
-                                15 Minutes
-                            </option>
-
-                            <option value="30m">
-                                30 Minutes
-                            </option>
-
-                            <option value="1h">
-                                1 Hour
-                            </option>
-
-                        </select>
-
-                    </div>
-
-
-                    <div class="field">
-
-                        <label for="tide_timeframe">
-                            Tide Timeframe
-                        </label>
-
-                        <select id="tide_timeframe">
-
-                            <option value="15m">
-                                15 Minutes
-                            </option>
-
-                            <option value="30m">
-                                30 Minutes
-                            </option>
-
-                            <option value="1h" selected>
-                                1 Hour
-                            </option>
-
-                            <option value="4h">
-                                4 Hours
-                            </option>
-
-                        </select>
-
-                    </div>
+                    <p>
+                        Wave and Tide market direction
+                    </p>
 
                 </div>
 
             </div>
 
 
-            <!-- =================================================
-                 WAVE EMA
-            ================================================== -->
+            <div class="settings-grid two-columns">
 
-            <div class="settings-group">
 
-                <div class="settings-group-title">
+                <div class="form-group">
 
-                    <span class="group-icon">
-                        〽
-                    </span>
+                    <label for="wave_timeframe">
+                        Wave Timeframe
+                    </label>
 
-                    <div>
+                    <select
+                        id="wave_timeframe"
+                    >
 
-                        <h3>
-                            Wave EMA
-                        </h3>
+                        <option value="5m">
+                            5 Minutes
+                        </option>
 
-                        <p>
-                            Three EMA trend structure
-                        </p>
+                        <option
+                            value="15m"
+                            selected
+                        >
+                            15 Minutes
+                        </option>
 
-                    </div>
+                        <option value="30m">
+                            30 Minutes
+                        </option>
+
+                        <option value="1h">
+                            1 Hour
+                        </option>
+
+                    </select>
 
                 </div>
 
 
-                <div class="settings-grid three-columns">
 
-                    <div class="field">
+                <div class="form-group">
 
-                        <label for="wave_ema_fast">
-                            EMA Fast
-                        </label>
+                    <label for="tide_timeframe">
+                        Tide Timeframe
+                    </label>
 
-                        <input
-                            id="wave_ema_fast"
-                            type="number"
-                            min="1"
-                            value="9"
+                    <select
+                        id="tide_timeframe"
+                    >
+
+                        <option value="15m">
+                            15 Minutes
+                        </option>
+
+                        <option value="30m">
+                            30 Minutes
+                        </option>
+
+                        <option
+                            value="1h"
+                            selected
                         >
+                            1 Hour
+                        </option>
 
-                    </div>
+                        <option value="4h">
+                            4 Hours
+                        </option>
 
+                    </select>
 
-                    <div class="field">
+                </div>
 
-                        <label for="wave_ema_medium">
-                            EMA Medium
-                        </label>
+            </div>
 
-                        <input
-                            id="wave_ema_medium"
-                            type="number"
-                            min="1"
-                            value="20"
-                        >
-
-                    </div>
+        </div>
 
 
-                    <div class="field">
 
-                        <label for="wave_ema_slow">
-                            EMA Slow
-                        </label>
+        <!-- =================================================
+             WAVE EMA
+        ================================================== -->
 
-                        <input
-                            id="wave_ema_slow"
-                            type="number"
-                            min="1"
-                            value="50"
-                        >
+        <div class="settings-group">
 
-                    </div>
+            <div class="group-title">
+
+                <span class="group-number">
+                    02
+                </span>
+
+                <div>
+
+                    <h3>
+                        Wave EMA
+                    </h3>
+
+                    <p>
+                        Fast, medium and slow trend structure
+                    </p>
 
                 </div>
 
             </div>
 
 
-            <!-- =================================================
-                 TIDE EMA
-            ================================================== -->
+            <div class="settings-grid three-columns">
 
-            <div class="settings-group">
 
-                <div class="settings-group-title">
+                <div class="form-group">
 
-                    <span class="group-icon">
-                        🌊
-                    </span>
+                    <label for="wave_ema_fast">
+                        EMA Fast
+                    </label>
 
-                    <div>
-
-                        <h3>
-                            Tide EMA
-                        </h3>
-
-                        <p>
-                            Higher timeframe trend structure
-                        </p>
-
-                    </div>
+                    <input
+                        id="wave_ema_fast"
+                        type="number"
+                        value="9"
+                        min="1"
+                    >
 
                 </div>
 
 
-                <div class="settings-grid three-columns">
+                <div class="form-group">
 
-                    <div class="field">
+                    <label for="wave_ema_medium">
+                        EMA Medium
+                    </label>
 
-                        <label for="tide_ema_fast">
-                            EMA Fast
-                        </label>
+                    <input
+                        id="wave_ema_medium"
+                        type="number"
+                        value="20"
+                        min="1"
+                    >
 
-                        <input
-                            id="tide_ema_fast"
-                            type="number"
-                            min="1"
-                            value="9"
-                        >
-
-                    </div>
+                </div>
 
 
-                    <div class="field">
+                <div class="form-group">
 
-                        <label for="tide_ema_medium">
-                            EMA Medium
-                        </label>
+                    <label for="wave_ema_slow">
+                        EMA Slow
+                    </label>
 
-                        <input
-                            id="tide_ema_medium"
-                            type="number"
-                            min="1"
-                            value="20"
-                        >
+                    <input
+                        id="wave_ema_slow"
+                        type="number"
+                        value="50"
+                        min="1"
+                    >
 
-                    </div>
+                </div>
+
+            </div>
+
+        </div>
 
 
-                    <div class="field">
 
-                        <label for="tide_ema_slow">
-                            EMA Slow
-                        </label>
+        <!-- =================================================
+             TIDE EMA
+        ================================================== -->
 
-                        <input
-                            id="tide_ema_slow"
-                            type="number"
-                            min="1"
-                            value="50"
-                        >
+        <div class="settings-group">
 
-                    </div>
+            <div class="group-title">
+
+                <span class="group-number">
+                    03
+                </span>
+
+                <div>
+
+                    <h3>
+                        Tide EMA
+                    </h3>
+
+                    <p>
+                        Higher timeframe trend confirmation
+                    </p>
 
                 </div>
 
             </div>
 
 
-            <!-- =================================================
-                 FILTER EMA
-            ================================================== -->
+            <div class="settings-grid three-columns">
 
-            <div class="settings-group">
 
-                <div class="settings-group-title">
+                <div class="form-group">
 
-                    <span class="group-icon">
-                        🔎
-                    </span>
+                    <label for="tide_ema_fast">
+                        EMA Fast
+                    </label>
 
-                    <div>
-
-                        <h3>
-                            Trend Filter
-                        </h3>
-
-                        <p>
-                            20 / 50 EMA market direction filter
-                        </p>
-
-                    </div>
+                    <input
+                        id="tide_ema_fast"
+                        type="number"
+                        value="9"
+                        min="1"
+                    >
 
                 </div>
 
 
-                <div class="settings-grid two-columns">
+                <div class="form-group">
 
-                    <div class="field">
+                    <label for="tide_ema_medium">
+                        EMA Medium
+                    </label>
 
-                        <label for="filter_ema_fast">
-                            Filter EMA Fast
-                        </label>
+                    <input
+                        id="tide_ema_medium"
+                        type="number"
+                        value="20"
+                        min="1"
+                    >
 
-                        <input
-                            id="filter_ema_fast"
-                            type="number"
-                            min="1"
-                            value="20"
-                        >
-
-                    </div>
+                </div>
 
 
-                    <div class="field">
+                <div class="form-group">
 
-                        <label for="filter_ema_slow">
-                            Filter EMA Slow
-                        </label>
+                    <label for="tide_ema_slow">
+                        EMA Slow
+                    </label>
 
-                        <input
-                            id="filter_ema_slow"
-                            type="number"
-                            min="1"
-                            value="50"
-                        >
+                    <input
+                        id="tide_ema_slow"
+                        type="number"
+                        value="50"
+                        min="1"
+                    >
 
-                    </div>
+                </div>
+
+            </div>
+
+        </div>
+
+
+
+        <!-- =================================================
+             FILTER EMA
+        ================================================== -->
+
+        <div class="settings-group">
+
+            <div class="group-title">
+
+                <span class="group-number">
+                    04
+                </span>
+
+                <div>
+
+                    <h3>
+                        Trend Filter
+                    </h3>
+
+                    <p>
+                        20 / 50 EMA market direction filter
+                    </p>
 
                 </div>
 
             </div>
 
 
-            <!-- =================================================
-                 HEIKIN ASHI
-            ================================================== -->
+            <div class="settings-grid two-columns">
 
-            <div class="settings-group">
 
-                <div class="settings-group-title">
+                <div class="form-group">
 
-                    <span class="group-icon">
-                        🕯
-                    </span>
+                    <label for="filter_ema_fast">
+                        Filter EMA Fast
+                    </label>
 
-                    <div>
-
-                        <h3>
-                            Heikin Ashi Confirmation
-                        </h3>
-
-                        <p>
-                            Candle direction confirmation
-                        </p>
-
-                    </div>
+                    <input
+                        id="filter_ema_fast"
+                        type="number"
+                        value="20"
+                        min="1"
+                    >
 
                 </div>
 
 
-                <div class="settings-grid two-columns">
+                <div class="form-group">
+
+                    <label for="filter_ema_slow">
+                        Filter EMA Slow
+                    </label>
+
+                    <input
+                        id="filter_ema_slow"
+                        type="number"
+                        value="50"
+                        min="1"
+                    >
+
+                </div>
+
+            </div>
+
+        </div>
 
 
-                    <div class="toggle-field">
 
-                        <div>
+        <!-- =================================================
+             HEIKIN ASHI
+        ================================================== -->
 
-                            <label>
-                                Wave Heikin Ashi
-                            </label>
+        <div class="settings-group">
 
-                            <small>
-                                Confirm Wave candle direction
-                            </small>
+            <div class="group-title">
 
-                        </div>
+                <span class="group-number">
+                    05
+                </span>
 
+                <div>
 
-                        <label class="switch">
+                    <h3>
+                        Heikin Ashi Confirmation
+                    </h3>
 
-                            <input
-                                type="checkbox"
-                                id="wave_heikin_ashi"
-                                checked
-                            >
-
-                            <span class="slider"></span>
-
-                        </label>
-
-                    </div>
-
-
-                    <div class="toggle-field">
-
-                        <div>
-
-                            <label>
-                                Tide Heikin Ashi
-                            </label>
-
-                            <small>
-                                Confirm Tide candle direction
-                            </small>
-
-                        </div>
-
-
-                        <label class="switch">
-
-                            <input
-                                type="checkbox"
-                                id="tide_heikin_ashi"
-                                checked
-                            >
-
-                            <span class="slider"></span>
-
-                        </label>
-
-                    </div>
+                    <p>
+                        Candle direction confirmation for Wave and Tide
+                    </p>
 
                 </div>
 
             </div>
 
 
-            <!-- =================================================
-                 INDICATORS
-            ================================================== -->
+            <div class="confirmation-grid">
 
-            <div class="settings-group">
 
-                <div class="settings-group-title">
-
-                    <span class="group-icon">
-                        📈
-                    </span>
+                <label class="toggle-card">
 
                     <div>
 
-                        <h3>
-                            Technical Indicators
-                        </h3>
+                        <strong>
+                            Wave Heikin Ashi
+                        </strong>
 
-                        <p>
-                            Momentum, trend and volume confirmation
-                        </p>
-
-                    </div>
-
-                </div>
-
-
-                <div class="settings-grid four-columns">
-
-
-                    <div class="field">
-
-                        <label for="rsi_period">
-                            RSI Period
-                        </label>
-
-                        <input
-                            id="rsi_period"
-                            type="number"
-                            min="1"
-                            value="14"
-                        >
+                        <span>
+                            Confirm Wave candle direction
+                        </span>
 
                     </div>
 
+                    <input
+                        id="wave_heikin_ashi"
+                        type="checkbox"
+                        checked
+                    >
 
-                    <div class="field">
+                    <span class="toggle-switch"></span>
 
-                        <label for="macd_fast">
-                            MACD Fast
-                        </label>
-
-                        <input
-                            id="macd_fast"
-                            type="number"
-                            min="1"
-                            value="12"
-                        >
-
-                    </div>
+                </label>
 
 
-                    <div class="field">
 
-                        <label for="macd_slow">
-                            MACD Slow
-                        </label>
-
-                        <input
-                            id="macd_slow"
-                            type="number"
-                            min="1"
-                            value="26"
-                        >
-
-                    </div>
-
-
-                    <div class="field">
-
-                        <label for="macd_signal">
-                            MACD Signal
-                        </label>
-
-                        <input
-                            id="macd_signal"
-                            type="number"
-                            min="1"
-                            value="9"
-                        >
-
-                    </div>
-
-
-                    <div class="field">
-
-                        <label for="stochastic_period">
-                            Stochastic Period
-                        </label>
-
-                        <input
-                            id="stochastic_period"
-                            type="number"
-                            min="1"
-                            value="14"
-                        >
-
-                    </div>
-
-
-                    <div class="field">
-
-                        <label for="stochastic_smooth">
-                            Stochastic Smooth
-                        </label>
-
-                        <input
-                            id="stochastic_smooth"
-                            type="number"
-                            min="1"
-                            value="3"
-                        >
-
-                    </div>
-
-
-                    <div class="field">
-
-                        <label for="volume_sma">
-                            Volume SMA
-                        </label>
-
-                        <input
-                            id="volume_sma"
-                            type="number"
-                            min="1"
-                            value="20"
-                        >
-
-                    </div>
-
-                </div>
-
-            </div>
-
-
-            <!-- =================================================
-                 SUPPORT / RESISTANCE
-            ================================================== -->
-
-            <div class="settings-group">
-
-                <div class="settings-group-title">
-
-                    <span class="group-icon">
-                        📐
-                    </span>
+                <label class="toggle-card">
 
                     <div>
 
-                        <h3>
-                            Support &amp; Resistance
-                        </h3>
+                        <strong>
+                            Tide Heikin Ashi
+                        </strong>
 
-                        <p>
-                            Market structure levels
-                        </p>
-
-                    </div>
-
-                </div>
-
-
-                <div class="settings-grid two-columns">
-
-
-                    <div class="field">
-
-                        <label for="sr_lookback">
-                            S/R Lookback
-                        </label>
-
-                        <input
-                            id="sr_lookback"
-                            type="number"
-                            min="10"
-                            value="160"
-                        >
+                        <span>
+                            Confirm Tide candle direction
+                        </span>
 
                     </div>
 
+                    <input
+                        id="tide_heikin_ashi"
+                        type="checkbox"
+                        checked
+                    >
 
-                    <div class="field">
+                    <span class="toggle-switch"></span>
 
-                        <label for="pivot">
-                            Pivot
-                        </label>
+                </label>
 
-                        <input
-                            id="pivot"
-                            type="number"
-                            min="1"
-                            value="3"
-                        >
+            </div>
 
-                    </div>
+        </div>
+
+
+
+        <!-- =================================================
+             TECHNICAL INDICATORS
+        ================================================== -->
+
+        <div class="settings-group">
+
+            <div class="group-title">
+
+                <span class="group-number">
+                    06
+                </span>
+
+                <div>
+
+                    <h3>
+                        Technical Indicators
+                    </h3>
+
+                    <p>
+                        Momentum, MACD, stochastic and volume confirmation
+                    </p>
 
                 </div>
 
             </div>
 
 
-            <!-- =================================================
-                 SIGNAL CONTROL
-            ================================================== -->
+            <div class="settings-grid four-columns">
 
-            <div class="settings-group">
 
-                <div class="settings-group-title">
+                <div class="form-group">
 
-                    <span class="group-icon">
-                        🎯
-                    </span>
+                    <label for="rsi_period">
+                        RSI Period
+                    </label>
 
-                    <div>
-
-                        <h3>
-                            Signal Control
-                        </h3>
-
-                        <p>
-                            Confirmation and risk parameters
-                        </p>
-
-                    </div>
+                    <input
+                        id="rsi_period"
+                        type="number"
+                        value="14"
+                        min="2"
+                    >
 
                 </div>
 
 
-                <div class="settings-grid four-columns">
+                <div class="form-group">
+
+                    <label for="macd_fast">
+                        MACD Fast
+                    </label>
+
+                    <input
+                        id="macd_fast"
+                        type="number"
+                        value="12"
+                        min="1"
+                    >
+
+                </div>
 
 
-                    <div class="field">
+                <div class="form-group">
 
-                        <label for="min_confirmation">
-                            Min Confirmation
-                        </label>
+                    <label for="macd_slow">
+                        MACD Slow
+                    </label>
 
-                        <input
-                            id="min_confirmation"
-                            type="number"
-                            min="1"
-                            value="7"
-                        >
+                    <input
+                        id="macd_slow"
+                        type="number"
+                        value="26"
+                        min="1"
+                    >
 
-                    </div>
-
-
-                    <div class="field">
-
-                        <label for="risk_reward">
-                            Risk / Reward
-                        </label>
-
-                        <input
-                            id="risk_reward"
-                            type="number"
-                            min="0.5"
-                            step="0.1"
-                            value="2"
-                        >
-
-                    </div>
+                </div>
 
 
-                    <div class="field">
+                <div class="form-group">
 
-                        <label for="buy_score">
-                            BUY Score
-                        </label>
+                    <label for="macd_signal">
+                        MACD Signal
+                    </label>
 
-                        <input
-                            id="buy_score"
-                            type="number"
-                            min="1"
-                            max="100"
-                            value="70"
-                        >
+                    <input
+                        id="macd_signal"
+                        type="number"
+                        value="9"
+                        min="1"
+                    >
 
-                    </div>
+                </div>
 
 
-                    <div class="field">
+                <div class="form-group">
 
-                        <label for="sell_score">
-                            SELL Score
-                        </label>
+                    <label for="stochastic_period">
+                        Stochastic Period
+                    </label>
 
-                        <input
-                            id="sell_score"
-                            type="number"
-                            min="1"
-                            max="100"
-                            value="30"
-                        >
+                    <input
+                        id="stochastic_period"
+                        type="number"
+                        value="14"
+                        min="1"
+                    >
 
-                    </div>
+                </div>
+
+
+                <div class="form-group">
+
+                    <label for="stochastic_smooth">
+                        Stochastic Smooth
+                    </label>
+
+                    <input
+                        id="stochastic_smooth"
+                        type="number"
+                        value="3"
+                        min="1"
+                    >
+
+                </div>
+
+
+                <div class="form-group">
+
+                    <label for="volume_sma">
+                        Volume SMA
+                    </label>
+
+                    <input
+                        id="volume_sma"
+                        type="number"
+                        value="20"
+                        min="1"
+                    >
+
+                </div>
+
+            </div>
+
+        </div>
+
+
+
+        <!-- =================================================
+             SUPPORT / RESISTANCE
+        ================================================== -->
+
+        <div class="settings-group">
+
+            <div class="group-title">
+
+                <span class="group-number">
+                    07
+                </span>
+
+                <div>
+
+                    <h3>
+                        Support &amp; Resistance
+                    </h3>
+
+                    <p>
+                        Market structure levels
+                    </p>
 
                 </div>
 
             </div>
 
 
-            <!-- =================================================
-                 BUTTONS
-            ================================================== -->
+            <div class="settings-grid two-columns">
 
-            <div class="settings-actions">
 
-                <button
-                    id="resetSettings"
-                    type="button"
-                    class="btn btn-secondary"
-                >
-                    ↺ Reset
-                </button>
+                <div class="form-group">
 
-                <button
-                    id="applySettings"
-                    type="button"
-                    class="btn btn-primary"
-                >
-                    ✓ Apply Settings
-                </button>
+                    <label for="sr_lookback">
+                        S/R Lookback
+                    </label>
+
+                    <input
+                        id="sr_lookback"
+                        type="number"
+                        value="160"
+                        min="10"
+                    >
+
+                </div>
+
+
+                <div class="form-group">
+
+                    <label for="pivot">
+                        Pivot
+                    </label>
+
+                    <input
+                        id="pivot"
+                        type="number"
+                        value="3"
+                        min="1"
+                    >
+
+                </div>
 
             </div>
 
-            <div
-                id="settingsMessage"
-                class="settings-message"
-            ></div>
+        </div>
+
+
+
+        <!-- =================================================
+             SIGNAL CONFIGURATION
+        ================================================== -->
+
+        <div class="settings-group">
+
+            <div class="group-title">
+
+                <span class="group-number">
+                    08
+                </span>
+
+                <div>
+
+                    <h3>
+                        Signal Configuration
+                    </h3>
+
+                    <p>
+                        Confirmation and risk parameters
+                    </p>
+
+                </div>
+
+            </div>
+
+
+            <div class="settings-grid four-columns">
+
+
+                <div class="form-group">
+
+                    <label for="min_confirmation">
+                        Min Confirmation
+                    </label>
+
+                    <input
+                        id="min_confirmation"
+                        type="number"
+                        value="7"
+                        min="1"
+                    >
+
+                </div>
+
+
+                <div class="form-group">
+
+                    <label for="risk_reward">
+                        Risk / Reward
+                    </label>
+
+                    <input
+                        id="risk_reward"
+                        type="number"
+                        value="2"
+                        min="0.5"
+                        step="0.5"
+                    >
+
+                </div>
+
+
+                <div class="form-group">
+
+                    <label for="buy_score">
+                        BUY Score
+                    </label>
+
+                    <input
+                        id="buy_score"
+                        type="number"
+                        value="70"
+                        min="1"
+                        max="100"
+                    >
+
+                </div>
+
+
+                <div class="form-group">
+
+                    <label for="sell_score">
+                        SELL Score
+                    </label>
+
+                    <input
+                        id="sell_score"
+                        type="number"
+                        value="30"
+                        min="1"
+                        max="100"
+                    >
+
+                </div>
+
+            </div>
+
+        </div>
+
+
+
+        <!-- =================================================
+             SETTINGS ACTIONS
+        ================================================== -->
+
+        <div class="settings-actions">
+
+
+            <button
+                id="resetSettings"
+                type="button"
+                class="btn btn-secondary"
+            >
+                ↻ Reset
+            </button>
+
+
+            <button
+                id="applySettings"
+                type="button"
+                class="btn btn-primary"
+            >
+                ✓ Apply Settings
+            </button>
 
         </div>
 
     </section>
+
+
+
+    <!-- =====================================================
+         ACTIVE STRATEGY
+    ====================================================== -->
+
+    <section class="strategy-overview">
+
+        <div class="section-header compact">
+
+            <div>
+
+                <h2>
+                    Active Strategy
+                </h2>
+
+                <p>
+                    Current scanner configuration
+                </p>
+
+            </div>
+
+        </div>
+
+
+        <div class="strategy-badges">
+
+
+            <div class="strategy-badge">
+
+                <span>
+                    Wave
+                </span>
+
+                <strong id="waveBadge">
+                    15 Minutes
+                </strong>
+
+            </div>
+
+
+            <div class="strategy-badge">
+
+                <span>
+                    Tide
+                </span>
+
+                <strong id="tideBadge">
+                    1 Hour
+                </strong>
+
+            </div>
+
+
+            <div class="strategy-badge">
+
+                <span>
+                    Wave EMA
+                </span>
+
+                <strong>
+                    9 / 20 / 50
+                </strong>
+
+            </div>
+
+
+            <div class="strategy-badge">
+
+                <span>
+                    Tide EMA
+                </span>
+
+                <strong>
+                    9 / 20 / 50
+                </strong>
+
+            </div>
+
+
+            <div class="strategy-badge">
+
+                <span>
+                    Filter EMA
+                </span>
+
+                <strong>
+                    20 / 50
+                </strong>
+
+            </div>
+
+
+            <div class="strategy-badge">
+
+                <span>
+                    Risk / Reward
+                </span>
+
+                <strong>
+                    1 : 2
+                </strong>
+
+            </div>
+
+
+            <div class="strategy-badge">
+
+                <span>
+                    Candle
+                </span>
+
+                <strong>
+                    Heikin Ashi
+                </strong>
+
+            </div>
+
+        </div>
+
+    </section>
+
 
 
     <!-- =====================================================
@@ -1049,7 +1206,8 @@
 
     <section class="scanner-card">
 
-        <div class="section-header scanner-header">
+
+        <div class="scanner-header">
 
             <div>
 
@@ -1064,11 +1222,12 @@
             </div>
 
 
-            <div class="scanner-controls">
+            <div class="scanner-tools">
+
 
                 <select
                     id="signalFilter"
-                    aria-label="Signal filter"
+                    class="filter-select"
                 >
 
                     <option value="ALL">
@@ -1076,86 +1235,39 @@
                     </option>
 
                     <option value="BUY">
-                        BUY
+                        BUY Only
                     </option>
 
                     <option value="SELL">
-                        SELL
+                        SELL Only
                     </option>
 
                     <option value="WAIT">
-                        WAIT
+                        WAIT Only
                     </option>
 
                 </select>
 
 
-                <input
-                    id="stockSearch"
-                    type="search"
-                    placeholder="Search stock..."
-                    autocomplete="off"
-                >
+                <div class="search-box">
+
+                    <span>
+                        🔍
+                    </span>
+
+                    <input
+                        id="stockSearch"
+                        type="text"
+                        placeholder="Search stock..."
+                        autocomplete="off"
+                    >
+
+                </div>
 
             </div>
 
         </div>
 
-
-        <!-- =================================================
-             STRATEGY BADGES
-        ================================================== -->
-
-        <div class="strategy-bar">
-
-            <div class="strategy-badge">
-                <span>Wave</span>
-                <strong id="waveBadge">
-                    15m
-                </strong>
-            </div>
-
-
-            <div class="strategy-badge">
-                <span>Tide</span>
-                <strong id="tideBadge">
-                    1h
-                </strong>
-            </div>
-
-
-            <div class="strategy-badge">
-                <span>Wave EMA</span>
-                <strong>
-                    9 / 20 / 50
-                </strong>
-            </div>
-
-
-            <div class="strategy-badge">
-                <span>Tide EMA</span>
-                <strong>
-                    9 / 20 / 50
-                </strong>
-            </div>
-
-
-            <div class="strategy-badge">
-                <span>Filter</span>
-                <strong>
-                    20 / 50
-                </strong>
-            </div>
-
-
-            <div class="strategy-badge">
-                <span>RR</span>
-                <strong>
-                    1 : 2
-                </strong>
-            </div>
-
-        </div>
 
 
         <!-- =================================================
@@ -1165,115 +1277,115 @@
         <div class="table-wrapper">
 
             <table
-                id="scannerTable"
                 class="scanner-table"
+                id="scannerTable"
             >
 
                 <thead>
 
-                <tr>
+                    <tr>
 
-                    <th>
-                        #
-                    </th>
+                        <th>
+                            #
+                        </th>
 
-                    <th>
-                        STOCK
-                    </th>
+                        <th>
+                            STOCK
+                        </th>
 
-                    <th>
-                        LTP
-                    </th>
+                        <th>
+                            LTP
+                        </th>
 
-                    <th>
-                        CHANGE
-                    </th>
+                        <th>
+                            CHANGE
+                        </th>
 
-                    <th>
-                        WAVE
-                    </th>
+                        <th>
+                            WAVE
+                        </th>
 
-                    <th>
-                        TIDE
-                    </th>
+                        <th>
+                            TIDE
+                        </th>
 
-                    <th>
-                        FILTER
-                    </th>
+                        <th>
+                            FILTER
+                        </th>
 
-                    <th>
-                        EMA
-                    </th>
+                        <th>
+                            EMA
+                        </th>
 
-                    <th>
-                        RSI
-                    </th>
+                        <th>
+                            RSI
+                        </th>
 
-                    <th>
-                        MACD
-                    </th>
+                        <th>
+                            MACD
+                        </th>
 
-                    <th>
-                        VOLUME
-                    </th>
+                        <th>
+                            VOLUME
+                        </th>
 
-                    <th>
-                        SUPPORT
-                    </th>
+                        <th>
+                            SUPPORT
+                        </th>
 
-                    <th>
-                        RESISTANCE
-                    </th>
+                        <th>
+                            RESISTANCE
+                        </th>
 
-                    <th>
-                        SCORE
-                    </th>
+                        <th>
+                            SCORE
+                        </th>
 
-                    <th>
-                        SIGNAL
-                    </th>
+                        <th>
+                            SIGNAL
+                        </th>
 
-                    <th>
-                        SL
-                    </th>
+                        <th>
+                            SL
+                        </th>
 
-                    <th>
-                        TARGET
-                    </th>
+                        <th>
+                            TARGET
+                        </th>
 
-                    <th>
-                        RR
-                    </th>
+                        <th>
+                            RR
+                        </th>
 
-                </tr>
+                    </tr>
 
                 </thead>
 
 
                 <tbody id="scannerBody">
 
-                <tr>
+                    <tr>
 
-                    <td
-                        colspan="18"
-                        class="empty-state"
-                    >
+                        <td
+                            colspan="18"
+                            class="empty-state"
+                        >
 
-                        <div class="empty-icon">
-                            📡
-                        </div>
+                            <div class="empty-icon">
+                                📡
+                            </div>
 
-                        <strong>
-                            Loading scanner...
-                        </strong>
+                            <strong>
+                                Connecting to scanner...
+                            </strong>
 
-                        <span>
-                            Waiting for NSE market data
-                        </span>
+                            <span>
+                                Waiting for NSE market data
+                            </span>
 
-                    </td>
+                        </td>
 
-                </tr>
+                    </tr>
 
                 </tbody>
 
@@ -1283,50 +1395,103 @@
 
 
         <!-- =================================================
-             FOOTER
+             TABLE FOOTER
         ================================================== -->
 
         <div class="scanner-footer">
 
-            <span>
-                Indian F&amp;O Scanner
-            </span>
+            <div>
 
-            <span>
-                Market analysis tool
-            </span>
+                <span>
+                    NSE F&amp;O Scanner
+                </span>
 
-            <span>
-                No automatic order placement
-            </span>
+                <span class="separator">
+                    •
+                </span>
+
+                <span>
+                    Technical Analysis
+                </span>
+
+                <span class="separator">
+                    •
+                </span>
+
+                <span>
+                    No automatic order placement
+                </span>
+
+            </div>
+
+
+            <div id="lastUpdate">
+                Waiting for update...
+            </div>
 
         </div>
 
     </section>
 
 
+
     <!-- =====================================================
-         TOAST
+         FOOTER
     ====================================================== -->
 
-    <div
-        id="toast"
-        class="toast"
-        aria-live="polite"
-    >
-        <span id="toastMessage">
-        </span>
-    </div>
+    <footer class="app-footer">
+
+        <div>
+
+            <strong>
+                Indian F&amp;O Scanner
+            </strong>
+
+            <span>
+                Professional Market Analysis Dashboard
+            </span>
+
+        </div>
+
+
+        <div>
+            Data powered by Groww API
+        </div>
+
+    </footer>
 
 
 </div>
 
 
+
 <!-- =========================================================
-     JAVASCRIPT
+     TOAST
 ========================================================= -->
 
-<script src="/static/app.js"></script>
+<div
+    id="toast"
+    class="toast"
+>
+
+    <span id="toastMessage">
+        Done
+    </span>
+
+</div>
+
+
+
+<!-- IMPORTANT:
+     FastAPI mounts /static at /
+     Therefore JS is /app.js
+-->
+
+<script
+    src="/app.js?v=10"
+    defer
+></script>
+
 
 </body>
 </html>

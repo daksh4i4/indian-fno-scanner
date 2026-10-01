@@ -1,418 +1,2187 @@
-from __future__ import annotations
-
-from collections import defaultdict, deque
-from datetime import datetime
 import math
 import threading
-from typing import Any
+from datetime import datetime, timezone
 
-import numpy as np
 import pandas as pd
+import numpy as np
+
+
+# ============================================================
+# DEFAULT SETTINGS
+# ============================================================
 
 DEFAULT_SETTINGS = {
-    "telegram_enabled": False,
+    # Timeframes
+    "entry_timeframe": "5m",
     "wave_timeframe": "15m",
     "tide_timeframe": "1h",
-    "entry_timeframe": "5m",
+
+    # EMA
     "ema_fast": 9,
     "ema_mid": 20,
     "ema_slow": 50,
+
+    # Trend filter
+    "trend_fast": 20,
+    "trend_slow": 50,
+
+    # RSI
     "rsi_length": 14,
-    "rsi_overbought": 70,
-    "rsi_oversold": 30,
+
+    # MACD
     "macd_fast": 12,
     "macd_slow": 26,
     "macd_signal": 9,
-    "stoch_k": 14,
-    "stoch_d": 3,
+
+    # Stochastic
+    "stoch_length": 14,
     "stoch_smooth": 3,
+
+    # Volume
     "volume_sma": 20,
+
+    # Support / Resistance
     "sr_lookback": 160,
     "pivot": 3,
-    "buy_threshold": 70,
-    "sell_threshold": 30,
-    "min_confirmation": 7,
-    "minimum_rr": 2.0,
+
+    # Signal
+    "base_score": 50,
+    "buy_score": 70,
+    "sell_score": 30,
+    "minimum_confirmation": 7,
+
+    # Risk reward
+    "risk_reward": 2.0,
+
+    # Minimum candles
+    "minimum_candles": 60,
 }
 
 
-def _safe_float(value, default=0.0):
+# ============================================================
+# NUMERIC HELPERS
+# ============================================================
+
+def safe_float(value, default=np.nan):
+
     try:
-        x = float(value)
-        return x if math.isfinite(x) else default
+
+        if value is None:
+            return default
+
+        if isinstance(value, str):
+
+            value = value.strip()
+
+            if not value:
+                return default
+
+        result = float(value)
+
+        if math.isfinite(result):
+            return result
+
+        return default
+
     except Exception:
+
         return default
 
 
-def _timeframe_minutes(tf: str) -> int:
-    value = str(tf).strip().lower()
-    if value.endswith("m"):
-        return max(1, int(value[:-1]))
-    if value.endswith("h"):
-        return max(1, int(value[:-1])) * 60
-    if value.endswith("d"):
-        return max(1, int(value[:-1])) * 1440
-    return 5
+def clamp(value, low, high):
+
+    return max(
+        low,
+        min(high, value)
+    )
 
 
-class ScannerEngine:
-    """Candle-based Indian F&O scanner using the strategy used by the prior scanner."""
+# ============================================================
+# TIMESTAMP PARSER
+# ============================================================
 
-    def __init__(self, settings=None):
-        self.settings = DEFAULT_SETTINGS.copy()
-        self.settings.update(settings or {})
-        self.candles = defaultdict(lambda: defaultdict(lambda: deque(maxlen=2500)))
-        self.live_bars = defaultdict(dict)
-        self.ticks = {}
-        self.signals = {}
-        self.lock = threading.RLock()
+def parse_timestamp(value):
 
-    def update_settings(self, payload):
-        numeric_int = {
-            "ema_fast", "ema_mid", "ema_slow", "rsi_length", "rsi_overbought",
-            "rsi_oversold", "macd_fast", "macd_slow", "macd_signal",
-            "stoch_k", "stoch_d", "stoch_smooth", "volume_sma", "sr_lookback",
-            "pivot", "buy_threshold", "sell_threshold", "min_confirmation"
-        }
-        for k, v in payload.items():
-            if k not in self.settings:
-                continue
-            if k in numeric_int:
-                v = int(v)
-                if v <= 0:
-                    raise ValueError(f"{k} must be positive")
-            elif k == "minimum_rr":
-                v = float(v)
-                if v <= 0:
-                    raise ValueError("minimum_rr must be positive")
-            else:
-                v = str(v).strip().lower()
-            self.settings[k] = v
-        self.recalculate_all()
-        return self.settings
+    """
+    Supports Groww candle timestamps such as:
 
-    def clear_history(self):
-        with self.lock:
-            self.candles.clear()
-            self.live_bars.clear()
-            self.signals.clear()
+        2025-09-24T10:30:00
 
-    def set_history(self, symbol: str, timeframe: str, candles):
-        """Load Groww historical candles: [timestamp, open, high, low, close, volume]."""
-        tf = str(timeframe).lower()
-        parsed = []
-        for row in candles or []:
-            if not isinstance(row, (list, tuple)) or len(row) < 5:
-                continue
-            try:
-                ts = int(float(row[0]))
-                if ts > 10_000_000_000:
-                    ts //= 1000
-                parsed.append({
-                    "timestamp": pd.to_datetime(ts, unit="s", utc=True),
-                    "open": _safe_float(row[1]),
-                    "high": _safe_float(row[2]),
-                    "low": _safe_float(row[3]),
-                    "close": _safe_float(row[4]),
-                    "volume": _safe_float(row[5] if len(row) > 5 else 0),
-                })
-            except Exception:
-                continue
-        parsed.sort(key=lambda x: x["timestamp"])
-        with self.lock:
-            self.candles[symbol][tf].clear()
-            for item in parsed[-2400:]:
-                self.candles[symbol][tf].append(item)
-        self._recalculate(symbol)
+    and:
 
-    def set_aggregated_history(self, symbol: str, timeframe: str, frame: pd.DataFrame):
-        rows = []
-        if frame is None or frame.empty:
-            return
-        for idx, r in frame.iterrows():
-            rows.append({
-                "timestamp": pd.Timestamp(idx),
-                "open": _safe_float(r.get("open")),
-                "high": _safe_float(r.get("high")),
-                "low": _safe_float(r.get("low")),
-                "close": _safe_float(r.get("close")),
-                "volume": _safe_float(r.get("volume")),
-            })
-        self.set_history(symbol, timeframe, [
-            [x["timestamp"].timestamp(), x["open"], x["high"], x["low"], x["close"], x["volume"]]
-            for x in rows
-        ])
+        2025-09-24T10:30:00+05:30
 
-    def update_tick(self, symbol, tick):
-        with self.lock:
-            old = self.ticks.get(symbol, {}).copy()
-            old.update(tick)
-            self.ticks[symbol] = old
-            self._append_live_tick(symbol, old)
-            self._recalculate(symbol)
+    and Unix timestamps in seconds/milliseconds.
+    """
 
-    def _append_live_tick(self, symbol, tick):
-        price = _safe_float(tick.get("ltp"))
-        if price <= 0:
-            return
-        ts = pd.Timestamp(tick.get("ts") or datetime.utcnow(), tz="UTC") if not isinstance(tick.get("ts"), pd.Timestamp) else tick["ts"]
-        if ts.tzinfo is None:
-            ts = ts.tz_localize("UTC")
-        ts = ts.tz_convert("UTC")
-        base_minute = ts.floor("min")
-        volume = _safe_float(tick.get("volume"))
+    if value is None:
+        return None
 
-        # Build 1-minute bars from the live LTP stream, then resample to configured TFs.
-        key = "1m"
-        bar = self.live_bars[symbol].get(key)
-        if bar is None or bar["timestamp"] != base_minute:
-            if bar is not None:
-                self._append_bar(symbol, key, bar)
-            self.live_bars[symbol][key] = {
-                "timestamp": base_minute, "open": price, "high": price,
-                "low": price, "close": price, "volume": volume
-            }
-        else:
-            bar["high"] = max(bar["high"], price)
-            bar["low"] = min(bar["low"], price)
-            bar["close"] = price
-            if volume:
-                bar["volume"] = volume
+    # --------------------------------------------------------
+    # Numeric timestamp
+    # --------------------------------------------------------
 
-    def _append_bar(self, symbol, timeframe, bar):
-        existing = self.candles[symbol][timeframe]
-        if existing and existing[-1]["timestamp"] == bar["timestamp"]:
-            existing[-1] = bar
-        else:
-            existing.append(bar.copy())
+    if isinstance(
+        value,
+        (int, float, np.integer, np.floating)
+    ):
 
-    def _frame(self, symbol, timeframe):
-        rows = list(self.candles[symbol].get(timeframe, []))
-        historical = pd.DataFrame(rows).set_index("timestamp").sort_index() if rows else pd.DataFrame()
+        try:
 
-        # Merge newly formed 1-minute live bars into the historical series so the
-        # dashboard continues updating between historical-data refreshes.
-        live_rows = list(self.candles[symbol].get("1m", []))
-        if live_rows and timeframe != "1m":
-            live = pd.DataFrame(live_rows).set_index("timestamp").sort_index()
-            mins = _timeframe_minutes(timeframe)
-            agg = live.resample(f"{mins}min", origin="start_day").agg({
-                "open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"
-            }).dropna()
-            if historical.empty:
-                return agg
-            # Only replace/append periods at or after the first live bar.
-            cutoff = agg.index.min()
-            historical = historical[historical.index < cutoff]
-            return pd.concat([historical, agg]).sort_index()
-        if not historical.empty:
-            return historical
+            number = float(value)
+
+            # Milliseconds
+            if number > 100000000000:
+
+                return datetime.fromtimestamp(
+                    number / 1000,
+                    tz=timezone.utc
+                )
+
+            # Seconds
+            return datetime.fromtimestamp(
+                number,
+                tz=timezone.utc
+            )
+
+        except Exception:
+
+            return None
+
+    # --------------------------------------------------------
+    # String timestamp
+    # --------------------------------------------------------
+
+    text = str(value).strip()
+
+    if not text:
+        return None
+
+    # Numeric string
+    try:
+
+        number = float(text)
+
+        if math.isfinite(number):
+
+            if number > 100000000000:
+
+                return datetime.fromtimestamp(
+                    number / 1000,
+                    tz=timezone.utc
+                )
+
+            if number > 1000000000:
+
+                return datetime.fromtimestamp(
+                    number,
+                    tz=timezone.utc
+                )
+
+    except Exception:
+        pass
+
+    # ISO timestamp
+    try:
+
+        normalized = text.replace(
+            "Z",
+            "+00:00"
+        )
+
+        dt = datetime.fromisoformat(
+            normalized
+        )
+
+        if dt.tzinfo is None:
+
+            # Groww/NSE timestamps without an
+            # offset are treated as IST.
+            from datetime import timedelta
+
+            ist = timezone(
+                timedelta(
+                    hours=5,
+                    minutes=30
+                )
+            )
+
+            dt = dt.replace(
+                tzinfo=ist
+            )
+
+        return dt
+
+    except Exception:
+        pass
+
+    # Pandas fallback
+    try:
+
+        dt = pd.to_datetime(
+            text,
+            errors="coerce"
+        )
+
+        if pd.isna(dt):
+            return None
+
+        if dt.tzinfo is None:
+
+            from datetime import timedelta
+
+            ist = timezone(
+                timedelta(
+                    hours=5,
+                    minutes=30
+                )
+            )
+
+            dt = dt.tz_localize(
+                ist
+            )
+
+        return dt.to_pydatetime()
+
+    except Exception:
+
+        return None
+
+
+# ============================================================
+# CANDLE NORMALIZATION
+# ============================================================
+
+def normalize_candles(candles):
+
+    """
+    Converts Groww candle response into:
+
+        timestamp
+        open
+        high
+        low
+        close
+        volume
+        open_interest
+
+    Supports:
+
+        [
+            timestamp,
+            open,
+            high,
+            low,
+            close,
+            volume,
+            open_interest
+        ]
+
+    and dictionary-style candles.
+    """
+
+    if candles is None:
         return pd.DataFrame()
 
-    @staticmethod
-    def _ema(s, length):
-        return s.ewm(span=max(1, int(length)), adjust=False).mean()
+    if not isinstance(
+        candles,
+        list
+    ):
+        return pd.DataFrame()
 
-    @staticmethod
-    def _rsi(s, length):
-        delta = s.diff()
-        gain = delta.clip(lower=0)
-        loss = -delta.clip(upper=0)
-        avg_gain = gain.ewm(alpha=1 / max(1, length), adjust=False, min_periods=length).mean()
-        avg_loss = loss.ewm(alpha=1 / max(1, length), adjust=False, min_periods=length).mean()
-        rs = avg_gain / avg_loss.replace(0, np.nan)
-        rsi = 100 - (100 / (1 + rs))
-        return rsi.fillna(50)
+    rows = []
 
-    def _indicators(self, df):
-        s = self.settings
-        if df.empty:
-            return df
-        out = df.copy()
-        out["ema_fast"] = self._ema(out.close, s["ema_fast"])
-        out["ema_mid"] = self._ema(out.close, s["ema_mid"])
-        out["ema_slow"] = self._ema(out.close, s["ema_slow"])
-        out["rsi"] = self._rsi(out.close, s["rsi_length"])
-        macd_fast = self._ema(out.close, s["macd_fast"])
-        macd_slow = self._ema(out.close, s["macd_slow"])
-        out["macd"] = macd_fast - macd_slow
-        out["macd_signal"] = self._ema(out.macd, s["macd_signal"])
-        low_n = out.low.rolling(s["stoch_k"]).min()
-        high_n = out.high.rolling(s["stoch_k"]).max()
-        denom = (high_n - low_n).replace(0, np.nan)
-        raw_k = 100 * (out.close - low_n) / denom
-        out["stoch_k"] = raw_k.rolling(s["stoch_smooth"]).mean().fillna(50)
-        out["stoch_d"] = out.stoch_k.rolling(s["stoch_d"]).mean().fillna(50)
-        out["volume_sma"] = out.volume.rolling(s["volume_sma"]).mean()
-        return out
+    for row in candles:
 
-    @staticmethod
-    def _pivots(df, n):
-        if df.empty:
-            return []
-        n = max(1, int(n))
-        highs = []
-        lows = []
-        h = df.high.to_numpy()
-        l = df.low.to_numpy()
-        for i in range(n, len(df) - n):
-            if h[i] >= np.max(h[i-n:i+n+1]):
-                highs.append(float(h[i]))
-            if l[i] <= np.min(l[i-n:i+n+1]):
-                lows.append(float(l[i]))
-        return highs, lows
+        try:
 
-    def _levels(self, df):
-        look = max(20, int(self.settings["sr_lookback"]))
-        recent = df.tail(look)
-        if recent.empty:
-            return 0.0, 0.0
-        highs, lows = self._pivots(recent, self.settings["pivot"])
-        price = float(recent.close.iloc[-1])
-        supports = [x for x in lows if x < price]
-        resistances = [x for x in highs if x > price]
-        support = max(supports) if supports else float(recent.low.min())
-        resistance = min(resistances) if resistances else float(recent.high.max())
-        return support, resistance
+            # ------------------------------------------------
+            # Dictionary format
+            # ------------------------------------------------
 
-    def _tf_signal(self, symbol, timeframe):
-        df = self._indicators(self._frame(symbol, timeframe))
-        if len(df) < max(self.settings["ema_slow"], self.settings["macd_slow"], self.settings["rsi_length"]) + 5:
-            return "WAIT", {}
-        r = df.iloc[-1]
-        bullish = r.close > r.ema_fast > r.ema_mid > r.ema_slow and r.ema_mid > r.ema_slow
-        bearish = r.close < r.ema_fast < r.ema_mid < r.ema_slow and r.ema_mid < r.ema_slow
-        return ("BUY" if bullish else "SELL" if bearish else "WAIT"), r.to_dict()
+            if isinstance(
+                row,
+                dict
+            ):
 
-    def _recalculate(self, symbol):
-        entry_tf = self.settings["entry_timeframe"]
-        wave_tf = self.settings["wave_timeframe"]
-        tide_tf = self.settings["tide_timeframe"]
-        entry = self._indicators(self._frame(symbol, entry_tf))
-        if len(entry) < max(60, self.settings["ema_slow"] + 5):
-            return
-        r = entry.iloc[-1]
-        price = _safe_float(r.close)
-        if price <= 0:
-            return
+                timestamp = (
+                    row.get("timestamp")
+                    or row.get("time")
+                    or row.get("datetime")
+                    or row.get("date")
+                )
 
-        score = 50.0
-        confirmations = 0
-        buy_reasons, sell_reasons = [], []
+                open_price = (
+                    row.get("open")
+                    or row.get("open_price")
+                )
 
-        def check(condition, weight, buy_text, sell_text):
-            nonlocal score, confirmations
-            if condition is True:
-                score += weight
-                confirmations += 1
-                buy_reasons.append(buy_text)
-            elif condition is False:
-                score -= weight
-                confirmations += 1
-                sell_reasons.append(sell_text)
+                high_price = (
+                    row.get("high")
+                    or row.get("high_price")
+                )
 
-        # 1. Entry EMA structure
-        check(bool(r.close > r.ema_fast > r.ema_mid > r.ema_slow), 8, "Entry EMA bullish", "Entry EMA bearish")
-        # 2. 20/50 trend filter
-        check(bool(r.ema_mid > r.ema_slow), 7, "20/50 bullish filter", "20/50 bearish filter")
-        # 3. RSI direction
-        check(bool(r.rsi >= 50), 6, f"RSI {r.rsi:.1f} bullish", f"RSI {r.rsi:.1f} bearish")
-        # 4. MACD
-        check(bool(r.macd > r.macd_signal), 7, "MACD bullish", "MACD bearish")
-        # 5. Stochastic
-        check(bool(r.stoch_k > r.stoch_d), 5, "Stochastic bullish", "Stochastic bearish")
-        # 6. Volume confirmation
-        volume_ok = bool(r.volume_sma and r.volume >= r.volume_sma)
-        if volume_ok:
-            confirmations += 1
-            buy_reasons.append("Volume above SMA")
-            sell_reasons.append("Volume above SMA")
-        # 7. Price vs previous close
-        prev_close = _safe_float(entry.close.iloc[-2])
-        check(bool(price >= prev_close), 4, "Price momentum positive", "Price momentum negative")
+                low_price = (
+                    row.get("low")
+                    or row.get("low_price")
+                )
 
-        wave, _ = self._tf_signal(symbol, wave_tf)
-        tide, _ = self._tf_signal(symbol, tide_tf)
-        if wave == "BUY":
-            score += 7; confirmations += 1; buy_reasons.append(f"Wave {wave_tf} BUY")
-        elif wave == "SELL":
-            score -= 7; confirmations += 1; sell_reasons.append(f"Wave {wave_tf} SELL")
-        if tide == "BUY":
-            score += 7; confirmations += 1; buy_reasons.append(f"Tide {tide_tf} BUY")
-        elif tide == "SELL":
-            score -= 7; confirmations += 1; sell_reasons.append(f"Tide {tide_tf} SELL")
+                close_price = (
+                    row.get("close")
+                    or row.get("close_price")
+                )
 
-        support, resistance = self._levels(entry)
-        room_long = resistance - price if resistance else 0
-        room_short = price - support if support else 0
-        risk_long = price - support if support and support < price else 0
-        risk_short = resistance - price if resistance and resistance > price else 0
-        long_rr = room_long / risk_long if risk_long > 0 else 0
-        short_rr = room_short / risk_short if risk_short > 0 else 0
+                volume = (
+                    row.get("volume")
+                    or 0
+                )
 
-        # S/R is both a confirmation and the actual 1:R target calculation.
-        if support and price > support:
-            confirmations += 1
-            buy_reasons.append("Price above support")
-        if resistance and price < resistance:
-            confirmations += 1
-            sell_reasons.append("Price below resistance")
+                open_interest = (
+                    row.get("open_interest")
+                    or row.get("oi")
+                    or 0
+                )
 
-        score = max(0, min(100, score))
-        min_conf = int(self.settings["min_confirmation"])
-        min_rr = float(self.settings["minimum_rr"])
-        buy_ok = score >= float(self.settings["buy_threshold"]) and confirmations >= min_conf and wave == "BUY" and tide == "BUY" and long_rr >= min_rr
-        sell_ok = score <= float(self.settings["sell_threshold"]) and confirmations >= min_conf and wave == "SELL" and tide == "SELL" and short_rr >= min_rr
-        if buy_ok:
-            signal, trend, rr = "BUY", "BULLISH", long_rr
-            reasons = buy_reasons
-            sl, target = support, price + max(0, risk_long * min_rr)
-        elif sell_ok:
-            signal, trend, rr = "SELL", "BEARISH", short_rr
-            reasons = sell_reasons
-            sl, target = resistance, price - max(0, risk_short * min_rr)
-        else:
-            signal, trend = "WAIT", "BULLISH" if score > 50 else "BEARISH" if score < 50 else "NEUTRAL"
-            rr = max(long_rr, short_rr)
-            reasons = buy_reasons if score >= 50 else sell_reasons
-            sl, target = support if score >= 50 else resistance, 0.0
+            # ------------------------------------------------
+            # List format
+            # ------------------------------------------------
 
-        tick = self.ticks.get(symbol, {})
-        self.signals[symbol] = {
-            "symbol": symbol,
-            "ltp": price,
-            "change_pct": _safe_float(tick.get("change_pct")),
-            "volume": _safe_float(r.volume),
-            "oi": _safe_float(tick.get("oi")),
-            "wave": wave,
-            "tide": tide,
-            "entry": entry_tf,
-            "score": round(score, 2),
-            "confirmation": confirmations,
-            "signal": signal,
-            "trend": trend,
-            "rr": round(rr, 2),
-            "support": round(support, 2) if support else 0,
-            "resistance": round(resistance, 2) if resistance else 0,
-            "sl": round(sl, 2) if sl else 0,
-            "target": round(target, 2) if target else 0,
-            "rsi": round(float(r.rsi), 2),
-            "macd": round(float(r.macd), 4),
-            "macd_signal": round(float(r.macd_signal), 4),
-            "stoch_k": round(float(r.stoch_k), 2),
-            "stoch_d": round(float(r.stoch_d), 2),
-            "volume_sma": round(_safe_float(r.volume_sma), 2),
-            "reasons": reasons[:8],
-            "updated": tick.get("ts"),
+            elif isinstance(
+                row,
+                (list, tuple)
+            ):
+
+                if len(row) < 5:
+                    continue
+
+                timestamp = row[0]
+                open_price = row[1]
+                high_price = row[2]
+                low_price = row[3]
+                close_price = row[4]
+
+                volume = (
+                    row[5]
+                    if len(row) > 5
+                    else 0
+                )
+
+                open_interest = (
+                    row[6]
+                    if len(row) > 6
+                    else 0
+                )
+
+            else:
+
+                continue
+
+            timestamp = parse_timestamp(
+                timestamp
+            )
+
+            if timestamp is None:
+                continue
+
+            open_price = safe_float(
+                open_price
+            )
+
+            high_price = safe_float(
+                high_price
+            )
+
+            low_price = safe_float(
+                low_price
+            )
+
+            close_price = safe_float(
+                close_price
+            )
+
+            volume = safe_float(
+                volume,
+                0
+            )
+
+            open_interest = safe_float(
+                open_interest,
+                0
+            )
+
+            if any(
+                pd.isna(x)
+                for x in [
+                    open_price,
+                    high_price,
+                    low_price,
+                    close_price,
+                ]
+            ):
+                continue
+
+            rows.append({
+                "timestamp": timestamp,
+                "open": open_price,
+                "high": high_price,
+                "low": low_price,
+                "close": close_price,
+                "volume": volume,
+                "open_interest": open_interest,
+            })
+
+        except Exception:
+
+            continue
+
+    if not rows:
+        return pd.DataFrame()
+
+    df = pd.DataFrame(
+        rows
+    )
+
+    # Remove duplicate timestamps.
+    df = df.drop_duplicates(
+        subset=["timestamp"],
+        keep="last"
+    )
+
+    # Sort oldest → newest.
+    df = df.sort_values(
+        "timestamp"
+    )
+
+    df = df.reset_index(
+        drop=True
+    )
+
+    return df
+
+
+# ============================================================
+# EMA
+# ============================================================
+
+def ema(series, length):
+
+    length = max(
+        1,
+        int(length)
+    )
+
+    return series.ewm(
+        span=length,
+        adjust=False,
+        min_periods=length
+    ).mean()
+
+
+# ============================================================
+# RSI
+# ============================================================
+
+def rsi(series, length=14):
+
+    length = max(
+        1,
+        int(length)
+    )
+
+    delta = series.diff()
+
+    gain = delta.clip(
+        lower=0
+    )
+
+    loss = -delta.clip(
+        upper=0
+    )
+
+    avg_gain = gain.ewm(
+        alpha=1 / length,
+        adjust=False,
+        min_periods=length
+    ).mean()
+
+    avg_loss = loss.ewm(
+        alpha=1 / length,
+        adjust=False,
+        min_periods=length
+    ).mean()
+
+    rs = avg_gain / avg_loss.replace(
+        0,
+        np.nan
+    )
+
+    result = 100 - (
+        100 / (1 + rs)
+    )
+
+    return result.fillna(50)
+
+
+# ============================================================
+# MACD
+# ============================================================
+
+def macd(
+    series,
+    fast=12,
+    slow=26,
+    signal=9
+):
+
+    fast_ema = ema(
+        series,
+        fast
+    )
+
+    slow_ema = ema(
+        series,
+        slow
+    )
+
+    macd_line = (
+        fast_ema -
+        slow_ema
+    )
+
+    signal_line = ema(
+        macd_line,
+        signal
+    )
+
+    histogram = (
+        macd_line -
+        signal_line
+    )
+
+    return (
+        macd_line,
+        signal_line,
+        histogram
+    )
+
+
+# ============================================================
+# STOCHASTIC
+# ============================================================
+
+def stochastic(
+    df,
+    length=14,
+    smooth=3
+):
+
+    length = max(
+        1,
+        int(length)
+    )
+
+    smooth = max(
+        1,
+        int(smooth)
+    )
+
+    lowest = df["low"].rolling(
+        length
+    ).min()
+
+    highest = df["high"].rolling(
+        length
+    ).max()
+
+    denominator = (
+        highest -
+        lowest
+    )
+
+    raw_k = (
+        (
+            df["close"] -
+            lowest
+        )
+        /
+        denominator.replace(
+            0,
+            np.nan
+        )
+        * 100
+    )
+
+    k = raw_k.rolling(
+        smooth
+    ).mean()
+
+    d = k.rolling(
+        smooth
+    ).mean()
+
+    return (
+        k.fillna(50),
+        d.fillna(50)
+    )
+
+
+# ============================================================
+# SUPPORT / RESISTANCE
+# ============================================================
+
+def support_resistance(
+    df,
+    lookback=160,
+    pivot=3
+):
+
+    if df.empty:
+        return (
+            np.nan,
+            np.nan
+        )
+
+    lookback = max(
+        10,
+        int(lookback)
+    )
+
+    pivot = max(
+        1,
+        int(pivot)
+    )
+
+    recent = df.tail(
+        lookback
+    )
+
+    # --------------------------------------------------------
+    # Pivot-based levels
+    # --------------------------------------------------------
+
+    highs = recent["high"].values
+    lows = recent["low"].values
+
+    resistance_values = []
+    support_values = []
+
+    for i in range(
+        pivot,
+        len(recent) - pivot
+    ):
+
+        current_high = highs[i]
+
+        left_highs = highs[
+            i - pivot:i
+        ]
+
+        right_highs = highs[
+            i + 1:i + pivot + 1
+        ]
+
+        if (
+            current_high >=
+            np.max(left_highs)
+            and
+            current_high >=
+            np.max(right_highs)
+        ):
+
+            resistance_values.append(
+                current_high
+            )
+
+        current_low = lows[i]
+
+        left_lows = lows[
+            i - pivot:i
+        ]
+
+        right_lows = lows[
+            i + 1:i + pivot + 1
+        ]
+
+        if (
+            current_low <=
+            np.min(left_lows)
+            and
+            current_low <=
+            np.min(right_lows)
+        ):
+
+            support_values.append(
+                current_low
+            )
+
+    price = float(
+        recent["close"].iloc[-1]
+    )
+
+    # --------------------------------------------------------
+    # Select nearest levels
+    # --------------------------------------------------------
+
+    supports = [
+        x
+        for x in support_values
+        if x < price
+    ]
+
+    resistances = [
+        x
+        for x in resistance_values
+        if x > price
+    ]
+
+    # Fallback to rolling levels.
+    if supports:
+
+        support = max(
+            supports
+        )
+
+    else:
+
+        support = float(
+            recent["low"].min()
+        )
+
+    if resistances:
+
+        resistance = min(
+            resistances
+        )
+
+    else:
+
+        resistance = float(
+            recent["high"].max()
+        )
+
+    return (
+        support,
+        resistance
+    )
+
+
+# ============================================================
+# INDICATOR CALCULATION
+# ============================================================
+
+def calculate_indicators(
+    candles,
+    settings
+):
+
+    df = normalize_candles(
+        candles
+    )
+
+    if df.empty:
+        return df
+
+    minimum = int(
+        settings.get(
+            "minimum_candles",
+            60
+        )
+    )
+
+    # We can calculate with fewer candles,
+    # but signal quality improves with enough history.
+    if len(df) < max(
+        20,
+        minimum
+    ):
+
+        # Continue calculation anyway.
+        pass
+
+    # --------------------------------------------------------
+    # EMA
+    # --------------------------------------------------------
+
+    df["ema_fast"] = ema(
+        df["close"],
+        settings[
+            "ema_fast"
+        ]
+    )
+
+    df["ema_mid"] = ema(
+        df["close"],
+        settings[
+            "ema_mid"
+        ]
+    )
+
+    df["ema_slow"] = ema(
+        df["close"],
+        settings[
+            "ema_slow"
+        ]
+    )
+
+    # Trend filter
+    df["trend_fast"] = ema(
+        df["close"],
+        settings[
+            "trend_fast"
+        ]
+    )
+
+    df["trend_slow"] = ema(
+        df["close"],
+        settings[
+            "trend_slow"
+        ]
+    )
+
+    # --------------------------------------------------------
+    # RSI
+    # --------------------------------------------------------
+
+    df["rsi"] = rsi(
+        df["close"],
+        settings[
+            "rsi_length"
+        ]
+    )
+
+    # --------------------------------------------------------
+    # MACD
+    # --------------------------------------------------------
+
+    (
+        df["macd"],
+        df["macd_signal"],
+        df["macd_hist"]
+    ) = macd(
+        df["close"],
+        settings[
+            "macd_fast"
+        ],
+        settings[
+            "macd_slow"
+        ],
+        settings[
+            "macd_signal"
+        ]
+    )
+
+    # --------------------------------------------------------
+    # STOCHASTIC
+    # --------------------------------------------------------
+
+    (
+        df["stoch_k"],
+        df["stoch_d"]
+    ) = stochastic(
+        df,
+        settings[
+            "stoch_length"
+        ],
+        settings[
+            "stoch_smooth"
+        ]
+    )
+
+    # --------------------------------------------------------
+    # VOLUME SMA
+    # --------------------------------------------------------
+
+    volume_period = max(
+        1,
+        int(
+            settings[
+                "volume_sma"
+            ]
+        )
+    )
+
+    df["volume_sma"] = (
+        df["volume"]
+        .rolling(
+            volume_period
+        )
+        .mean()
+    )
+
+    # --------------------------------------------------------
+    # SUPPORT / RESISTANCE
+    # --------------------------------------------------------
+
+    support, resistance = (
+        support_resistance(
+            df,
+            settings[
+                "sr_lookback"
+            ],
+            settings[
+                "pivot"
+            ]
+        )
+    )
+
+    df["support"] = support
+    df["resistance"] = resistance
+
+    return df
+
+
+# ============================================================
+# TIMEFRAME TREND
+# ============================================================
+
+def timeframe_direction(
+    df,
+    settings
+):
+
+    if df is None:
+        return "WAIT"
+
+    if df.empty:
+        return "WAIT"
+
+    row = df.iloc[-1]
+
+    close = safe_float(
+        row.get("close")
+    )
+
+    fast = safe_float(
+        row.get("ema_fast")
+    )
+
+    mid = safe_float(
+        row.get("ema_mid")
+    )
+
+    slow = safe_float(
+        row.get("ema_slow")
+    )
+
+    if any(
+        pd.isna(x)
+        for x in [
+            close,
+            fast,
+            mid,
+            slow,
+        ]
+    ):
+        return "WAIT"
+
+    if (
+        close > fast
+        and
+        fast > mid
+        and
+        mid > slow
+    ):
+
+        return "BUY"
+
+    if (
+        close < fast
+        and
+        fast < mid
+        and
+        mid < slow
+    ):
+
+        return "SELL"
+
+    return "WAIT"
+
+
+# ============================================================
+# SCORE ENGINE
+# ============================================================
+
+def score_entry(
+    entry_df,
+    wave_direction,
+    tide_direction,
+    settings
+):
+
+    if (
+        entry_df is None
+        or entry_df.empty
+    ):
+
+        return {
+            "signal": "WAIT",
+            "score": 50,
+            "confirmation": 0,
+            "reasons": [],
         }
 
-    def recalculate_all(self):
+    row = entry_df.iloc[-1]
+
+    close = safe_float(
+        row.get("close")
+    )
+
+    ema_fast_value = safe_float(
+        row.get("ema_fast")
+    )
+
+    ema_mid_value = safe_float(
+        row.get("ema_mid")
+    )
+
+    ema_slow_value = safe_float(
+        row.get("ema_slow")
+    )
+
+    trend_fast_value = safe_float(
+        row.get("trend_fast")
+    )
+
+    trend_slow_value = safe_float(
+        row.get("trend_slow")
+    )
+
+    rsi_value = safe_float(
+        row.get("rsi"),
+        50
+    )
+
+    macd_value = safe_float(
+        row.get("macd"),
+        0
+    )
+
+    macd_signal_value = safe_float(
+        row.get("macd_signal"),
+        0
+    )
+
+    macd_hist_value = safe_float(
+        row.get("macd_hist"),
+        0
+    )
+
+    stoch_k = safe_float(
+        row.get("stoch_k"),
+        50
+    )
+
+    stoch_d = safe_float(
+        row.get("stoch_d"),
+        50
+    )
+
+    volume_value = safe_float(
+        row.get("volume"),
+        0
+    )
+
+    volume_sma = safe_float(
+        row.get("volume_sma"),
+        0
+    )
+
+    support = safe_float(
+        row.get("support")
+    )
+
+    resistance = safe_float(
+        row.get("resistance")
+    )
+
+    score = int(
+        settings.get(
+            "base_score",
+            50
+        )
+    )
+
+    buy_confirmations = 0
+    sell_confirmations = 0
+
+    buy_reasons = []
+    sell_reasons = []
+
+    # --------------------------------------------------------
+    # EMA alignment
+    # --------------------------------------------------------
+
+    if (
+        close > ema_fast_value
+        and
+        ema_fast_value > ema_mid_value
+        and
+        ema_mid_value > ema_slow_value
+    ):
+
+        score += 8
+        buy_confirmations += 1
+
+        buy_reasons.append(
+            "EMA bullish alignment"
+        )
+
+    elif (
+        close < ema_fast_value
+        and
+        ema_fast_value < ema_mid_value
+        and
+        ema_mid_value < ema_slow_value
+    ):
+
+        score -= 8
+        sell_confirmations += 1
+
+        sell_reasons.append(
+            "EMA bearish alignment"
+        )
+
+    # --------------------------------------------------------
+    # 20/50 trend filter
+    # --------------------------------------------------------
+
+    if (
+        close > trend_fast_value
+        and
+        trend_fast_value > trend_slow_value
+    ):
+
+        score += 7
+        buy_confirmations += 1
+
+        buy_reasons.append(
+            "20/50 bullish trend"
+        )
+
+    elif (
+        close < trend_fast_value
+        and
+        trend_fast_value < trend_slow_value
+    ):
+
+        score -= 7
+        sell_confirmations += 1
+
+        sell_reasons.append(
+            "20/50 bearish trend"
+        )
+
+    # --------------------------------------------------------
+    # RSI
+    # --------------------------------------------------------
+
+    if rsi_value >= 55:
+
+        score += 5
+        buy_confirmations += 1
+
+        buy_reasons.append(
+            "RSI bullish"
+        )
+
+    elif rsi_value <= 45:
+
+        score -= 5
+        sell_confirmations += 1
+
+        sell_reasons.append(
+            "RSI bearish"
+        )
+
+    # --------------------------------------------------------
+    # MACD
+    # --------------------------------------------------------
+
+    if (
+        macd_value > macd_signal_value
+        and
+        macd_hist_value > 0
+    ):
+
+        score += 6
+        buy_confirmations += 1
+
+        buy_reasons.append(
+            "MACD bullish"
+        )
+
+    elif (
+        macd_value < macd_signal_value
+        and
+        macd_hist_value < 0
+    ):
+
+        score -= 6
+        sell_confirmations += 1
+
+        sell_reasons.append(
+            "MACD bearish"
+        )
+
+    # --------------------------------------------------------
+    # Stochastic
+    # --------------------------------------------------------
+
+    if (
+        stoch_k > stoch_d
+        and
+        stoch_k >= 50
+    ):
+
+        score += 4
+        buy_confirmations += 1
+
+        buy_reasons.append(
+            "Stochastic bullish"
+        )
+
+    elif (
+        stoch_k < stoch_d
+        and
+        stoch_k <= 50
+    ):
+
+        score -= 4
+        sell_confirmations += 1
+
+        sell_reasons.append(
+            "Stochastic bearish"
+        )
+
+    # --------------------------------------------------------
+    # Volume
+    # --------------------------------------------------------
+
+    if (
+        volume_sma > 0
+        and
+        volume_value > volume_sma
+    ):
+
+        if close > ema_mid_value:
+
+            score += 5
+            buy_confirmations += 1
+
+            buy_reasons.append(
+                "Volume above average"
+            )
+
+        elif close < ema_mid_value:
+
+            score -= 5
+            sell_confirmations += 1
+
+            sell_reasons.append(
+                "Volume above average"
+            )
+
+    # --------------------------------------------------------
+    # Wave
+    # --------------------------------------------------------
+
+    if wave_direction == "BUY":
+
+        score += 6
+        buy_confirmations += 1
+
+        buy_reasons.append(
+            "Wave BUY"
+        )
+
+    elif wave_direction == "SELL":
+
+        score -= 6
+        sell_confirmations += 1
+
+        sell_reasons.append(
+            "Wave SELL"
+        )
+
+    # --------------------------------------------------------
+    # Tide
+    # --------------------------------------------------------
+
+    if tide_direction == "BUY":
+
+        score += 6
+        buy_confirmations += 1
+
+        buy_reasons.append(
+            "Tide BUY"
+        )
+
+    elif tide_direction == "SELL":
+
+        score -= 6
+        sell_confirmations += 1
+
+        sell_reasons.append(
+            "Tide SELL"
+        )
+
+    # --------------------------------------------------------
+    # Support / Resistance
+    # --------------------------------------------------------
+
+    if not pd.isna(
+        support
+    ):
+
+        distance_support = (
+            close - support
+        ) / close * 100
+
+        if (
+            0 <= distance_support <= 2
+        ):
+
+            score += 3
+            buy_confirmations += 1
+
+            buy_reasons.append(
+                "Near support"
+            )
+
+    if not pd.isna(
+        resistance
+    ):
+
+        distance_resistance = (
+            resistance - close
+        ) / close * 100
+
+        if (
+            0 <= distance_resistance <= 2
+        ):
+
+            score -= 3
+            sell_confirmations += 1
+
+            sell_reasons.append(
+                "Near resistance"
+            )
+
+    score = int(
+        clamp(
+            score,
+            0,
+            100
+        )
+    )
+
+    # --------------------------------------------------------
+    # Final signal
+    # --------------------------------------------------------
+
+    buy_threshold = int(
+        settings.get(
+            "buy_score",
+            70
+        )
+    )
+
+    sell_threshold = int(
+        settings.get(
+            "sell_score",
+            30
+        )
+    )
+
+    minimum_confirmation = int(
+        settings.get(
+            "minimum_confirmation",
+            7
+        )
+    )
+
+    signal = "WAIT"
+
+    reasons = []
+
+    if (
+        score >= buy_threshold
+        and
+        wave_direction == "BUY"
+        and
+        tide_direction == "BUY"
+        and
+        buy_confirmations >=
+        minimum_confirmation
+    ):
+
+        signal = "BUY"
+
+        reasons = buy_reasons
+
+    elif (
+        score <= sell_threshold
+        and
+        wave_direction == "SELL"
+        and
+        tide_direction == "SELL"
+        and
+        sell_confirmations >=
+        minimum_confirmation
+    ):
+
+        signal = "SELL"
+
+        reasons = sell_reasons
+
+    else:
+
+        if score >= 50:
+
+            reasons = buy_reasons
+
+        else:
+
+            reasons = sell_reasons
+
+    return {
+        "signal": signal,
+        "score": score,
+        "confirmation": max(
+            buy_confirmations,
+            sell_confirmations
+        ),
+        "buy_confirmation": buy_confirmations,
+        "sell_confirmation": sell_confirmations,
+        "reasons": reasons,
+    }
+
+
+# ============================================================
+# RISK / REWARD
+# ============================================================
+
+def calculate_risk_reward(
+    entry,
+    signal,
+    support,
+    resistance,
+    settings
+):
+
+    entry = safe_float(
+        entry
+    )
+
+    support = safe_float(
+        support
+    )
+
+    resistance = safe_float(
+        resistance
+    )
+
+    rr = safe_float(
+        settings.get(
+            "risk_reward",
+            2.0
+        ),
+        2.0
+    )
+
+    if pd.isna(entry):
+        return {
+            "stop_loss": None,
+            "target": None,
+            "risk": None,
+        }
+
+    # --------------------------------------------------------
+    # BUY
+    # --------------------------------------------------------
+
+    if signal == "BUY":
+
+        if (
+            not pd.isna(support)
+            and
+            support < entry
+        ):
+
+            stop = support
+
+        else:
+
+            # fallback: 1% risk
+            stop = entry * 0.99
+
+        risk = entry - stop
+
+        if risk <= 0:
+
+            return {
+                "stop_loss": None,
+                "target": None,
+                "risk": None,
+            }
+
+        target = (
+            entry +
+            risk * rr
+        )
+
+        return {
+            "stop_loss": stop,
+            "target": target,
+            "risk": risk,
+        }
+
+    # --------------------------------------------------------
+    # SELL
+    # --------------------------------------------------------
+
+    if signal == "SELL":
+
+        if (
+            not pd.isna(resistance)
+            and
+            resistance > entry
+        ):
+
+            stop = resistance
+
+        else:
+
+            # fallback: 1% risk
+            stop = entry * 1.01
+
+        risk = stop - entry
+
+        if risk <= 0:
+
+            return {
+                "stop_loss": None,
+                "target": None,
+                "risk": None,
+            }
+
+        target = (
+            entry -
+            risk * rr
+        )
+
+        return {
+            "stop_loss": stop,
+            "target": target,
+            "risk": risk,
+        }
+
+    return {
+        "stop_loss": None,
+        "target": None,
+        "risk": None,
+    }
+
+
+# ============================================================
+# SCANNER ENGINE
+# ============================================================
+
+class ScannerEngine:
+
+    def __init__(
+        self,
+        settings=None
+    ):
+
+        self.settings = (
+            DEFAULT_SETTINGS.copy()
+            if settings is None
+            else settings.copy()
+        )
+
+        self.history = {}
+        self.results = {}
+        self.ticks = {}
+
+        self.lock = threading.RLock()
+
+    # --------------------------------------------------------
+    # SETTINGS
+    # --------------------------------------------------------
+
+    def update_settings(
+        self,
+        updates
+    ):
+
+        if not isinstance(
+            updates,
+            dict
+        ):
+            return
+
         with self.lock:
-            for symbol in set(self.ticks.keys()) | set(self.candles.keys()):
-                self._recalculate(symbol)
+
+            for key, value in updates.items():
+
+                if key not in self.settings:
+                    continue
+
+                current = self.settings[
+                    key
+                ]
+
+                try:
+
+                    if isinstance(
+                        current,
+                        int
+                    ):
+
+                        value = int(
+                            value
+                        )
+
+                    elif isinstance(
+                        current,
+                        float
+                    ):
+
+                        value = float(
+                            value
+                        )
+
+                    elif isinstance(
+                        current,
+                        str
+                    ):
+
+                        value = str(
+                            value
+                        )
+
+                except Exception:
+                    continue
+
+                self.settings[
+                    key
+                ] = value
+
+    # --------------------------------------------------------
+    # CLEAR HISTORY
+    # --------------------------------------------------------
+
+    def clear_history(self):
+
+        with self.lock:
+
+            self.history.clear()
+            self.results.clear()
+
+    # --------------------------------------------------------
+    # SET HISTORY
+    # --------------------------------------------------------
+
+    def set_history(
+        self,
+        symbol,
+        timeframe,
+        candles
+    ):
+
+        df = calculate_indicators(
+            candles,
+            self.settings
+        )
+
+        if df.empty:
+            return False
+
+        with self.lock:
+
+            self.history[
+                (
+                    symbol,
+                    timeframe
+                )
+            ] = df
+
+        return True
+
+    # --------------------------------------------------------
+    # TICK
+    # --------------------------------------------------------
+
+    def update_tick(
+        self,
+        symbol,
+        data
+    ):
+
+        with self.lock:
+
+            self.ticks[
+                symbol
+            ] = {
+                **self.ticks.get(
+                    symbol,
+                    {}
+                ),
+                **data,
+            }
+
+            # Update latest close.
+            for (
+                key
+            ), df in list(
+                self.history.items()
+            ):
+
+                if key[0] != symbol:
+                    continue
+
+                if df.empty:
+                    continue
+
+                price = safe_float(
+                    data.get(
+                        "ltp"
+                    )
+                )
+
+                if pd.isna(price):
+                    continue
+
+                self.history[
+                    key
+                ].iat[
+                    -1,
+                    self.history[
+                        key
+                    ].columns.get_loc(
+                        "close"
+                    )
+                ] = price
+
+    # --------------------------------------------------------
+    # GET HISTORY
+    # --------------------------------------------------------
+
+    def get_history(
+        self,
+        symbol,
+        timeframe
+    ):
+
+        return self.history.get(
+            (
+                symbol,
+                timeframe
+            )
+        )
+
+    # --------------------------------------------------------
+    # RECALCULATE ONE
+    # --------------------------------------------------------
+
+    def calculate_symbol(
+        self,
+        symbol
+    ):
+
+        entry_tf = self.settings[
+            "entry_timeframe"
+        ]
+
+        wave_tf = self.settings[
+            "wave_timeframe"
+        ]
+
+        tide_tf = self.settings[
+            "tide_timeframe"
+        ]
+
+        entry_df = self.get_history(
+            symbol,
+            entry_tf
+        )
+
+        wave_df = self.get_history(
+            symbol,
+            wave_tf
+        )
+
+        tide_df = self.get_history(
+            symbol,
+            tide_tf
+        )
+
+        if (
+            entry_df is None
+            or entry_df.empty
+        ):
+
+            return None
+
+        # Recalculate indicators if settings
+        # changed.
+        entry_df = calculate_indicators(
+            entry_df[
+                [
+                    "timestamp",
+                    "open",
+                    "high",
+                    "low",
+                    "close",
+                    "volume",
+                    "open_interest",
+                ]
+            ].to_dict(
+                "records"
+            ),
+            self.settings
+        )
+
+        if (
+            wave_df is not None
+            and not wave_df.empty
+        ):
+
+            wave_df = calculate_indicators(
+                wave_df[
+                    [
+                        "timestamp",
+                        "open",
+                        "high",
+                        "low",
+                        "close",
+                        "volume",
+                        "open_interest",
+                    ]
+                ].to_dict(
+                    "records"
+                ),
+                self.settings
+            )
+
+        if (
+            tide_df is not None
+            and not tide_df.empty
+        ):
+
+            tide_df = calculate_indicators(
+                tide_df[
+                    [
+                        "timestamp",
+                        "open",
+                        "high",
+                        "low",
+                        "close",
+                        "volume",
+                        "open_interest",
+                    ]
+                ].to_dict(
+                "records"
+                ),
+                self.settings
+            )
+
+        wave_direction = timeframe_direction(
+            wave_df,
+            self.settings
+        )
+
+        tide_direction = timeframe_direction(
+            tide_df,
+            self.settings
+        )
+
+        scored = score_entry(
+            entry_df,
+            wave_direction,
+            tide_direction,
+            self.settings
+        )
+
+        row = entry_df.iloc[-1]
+
+        entry_price = safe_float(
+            row.get("close")
+        )
+
+        support = safe_float(
+            row.get("support")
+        )
+
+        resistance = safe_float(
+            row.get("resistance")
+        )
+
+        rr = calculate_risk_reward(
+            entry_price,
+            scored["signal"],
+            support,
+            resistance,
+            self.settings
+        )
+
+        tick = self.ticks.get(
+            symbol,
+            {}
+        )
+
+        ltp = safe_float(
+            tick.get(
+                "ltp"
+            ),
+            entry_price
+        )
+
+        volume = safe_float(
+            row.get(
+                "volume"
+            ),
+            0
+        )
+
+        oi = safe_float(
+            row.get(
+                "open_interest"
+            ),
+            0
+        )
+
+        return {
+            "symbol": symbol,
+
+            "ltp": None
+            if pd.isna(ltp)
+            else round(
+                float(ltp),
+                2
+            ),
+
+            "entry": None
+            if pd.isna(entry_price)
+            else round(
+                float(entry_price),
+                2
+            ),
+
+            "signal": scored[
+                "signal"
+            ],
+
+            "score": scored[
+                "score"
+            ],
+
+            "confirmation": scored[
+                "confirmation"
+            ],
+
+            "buy_confirmation": scored[
+                "buy_confirmation"
+            ],
+
+            "sell_confirmation": scored[
+                "sell_confirmation"
+            ],
+
+            "wave": wave_direction,
+
+            "tide": tide_direction,
+
+            "rsi": round(
+                safe_float(
+                    row.get(
+                        "rsi"
+                    ),
+                    50
+                ),
+                2
+            ),
+
+            "macd": round(
+                safe_float(
+                    row.get(
+                        "macd"
+                    ),
+                    0
+                ),
+                4
+            ),
+
+            "macd_signal": round(
+                safe_float(
+                    row.get(
+                        "macd_signal"
+                    ),
+                    0
+                ),
+                4
+            ),
+
+            "stoch_k": round(
+                safe_float(
+                    row.get(
+                        "stoch_k"
+                    ),
+                    50
+                ),
+                2
+            ),
+
+            "stoch_d": round(
+                safe_float(
+                    row.get(
+                        "stoch_d"
+                    ),
+                    50
+                ),
+                2
+            ),
+
+            "volume": volume,
+
+            "open_interest": oi,
+
+            "support": None
+            if pd.isna(support)
+            else round(
+                float(support),
+                2
+            ),
+
+            "resistance": None
+            if pd.isna(resistance)
+            else round(
+                float(resistance),
+                2
+            ),
+
+            "stop_loss": rr[
+                "stop_loss"
+            ],
+
+            "target": rr[
+                "target"
+            ],
+
+            "risk": rr[
+                "risk"
+            ],
+
+            "reasons": scored[
+                "reasons"
+            ],
+
+            "timestamp": str(
+                row.get(
+                    "timestamp"
+                )
+            ),
+        }
+
+    # --------------------------------------------------------
+    # RECALCULATE ALL
+    # --------------------------------------------------------
+
+    def recalculate_all(self):
+
+        symbols = set()
+
+        with self.lock:
+
+            for (
+                symbol,
+                _timeframe
+            ) in self.history.keys():
+
+                symbols.add(
+                    symbol
+                )
+
+        results = {}
+
+        for symbol in symbols:
+
+            try:
+
+                result = self.calculate_symbol(
+                    symbol
+                )
+
+                if result:
+
+                    results[
+                        symbol
+                    ] = result
+
+            except Exception as exc:
+
+                print(
+                    f"Strategy error "
+                    f"{symbol}: "
+                    f"{exc}"
+                )
+
+        with self.lock:
+
+            self.results = results
+
+    # --------------------------------------------------------
+    # SNAPSHOT
+    # --------------------------------------------------------
 
     def snapshot(self):
+
+        self.recalculate_all()
+
         with self.lock:
-            rows = list(self.signals.values())
-        rows.sort(key=lambda x: (-float(x.get("score", 0)), x["symbol"]))
-        return rows
+
+            values = list(
+                self.results.values()
+            )
+
+        # Signal priority first, score second.
+        priority = {
+            "BUY": 0,
+            "SELL": 1,
+            "WAIT": 2,
+        }
+
+        values.sort(
+            key=lambda x: (
+                priority.get(
+                    x.get(
+                        "signal",
+                        "WAIT"
+                    ),
+                    2
+                ),
+                -float(
+                    x.get(
+                        "score",
+                        0
+                    )
+                ),
+                x.get(
+                    "symbol",
+                    ""
+                )
+            )
+        )
+
+        return values
+
+
+# ============================================================
+# EXPORTS
+# ============================================================
+
+__all__ = [
+    "DEFAULT_SETTINGS",
+    "ScannerEngine",
+]

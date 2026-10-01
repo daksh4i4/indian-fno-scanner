@@ -10,6 +10,7 @@ import numpy as np
 import pandas as pd
 
 DEFAULT_SETTINGS = {
+    "telegram_enabled": False,
     "wave_timeframe": "15m",
     "tide_timeframe": "1h",
     "entry_timeframe": "5m",

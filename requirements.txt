@@ -4,3 +4,5 @@ growwapi
 pandas
 numpy
 python-dotenv
+
+requests>=2.31,<3

@@ -12,7 +12,7 @@ A live NSE F&O stock scanner powered by Groww API.
 - EMA 9 / 20 / 50
 - EMA 20 / 50 trend filter
 - RSI
-- MAC
+- MACD
 - Stochastic
 - Volume analysis
 - Support & Resistance

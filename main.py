@@ -4,7 +4,7 @@ import hashlib
 import threading
 import logging
 from datetime import datetime, timedelta
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, Optional
 
 import requests
 import pandas as pd
@@ -17,45 +17,124 @@ from strategy import ScannerEngine, DEFAULT_SETTINGS
 
 
 # ============================================================
-# APPLICATION CONFIG
+# CONFIG
 # ============================================================
 
 load_dotenv()
-
-APP_NAME = "Indian F&O Scanner"
 
 GROWW_API_KEY = os.getenv("GROWW_API_KEY", "").strip()
 GROWW_API_SECRET = os.getenv("GROWW_API_SECRET", "").strip()
 
 GROWW_BASE_URL = "https://api.groww.in"
 
-GROWW_TOKEN_URL = (
-    f"{GROWW_BASE_URL}/v1/token/api/access"
-)
+TOKEN_URL = f"{GROWW_BASE_URL}/v1/token/api/access"
+HISTORICAL_URL = f"{GROWW_BASE_URL}/v1/historical/candles"
+LTP_URL = f"{GROWW_BASE_URL}/v1/live-data/ltp"
+USER_DETAIL_URL = f"{GROWW_BASE_URL}/v1/user/detail"
 
-GROWW_HISTORICAL_URL = (
-    f"{GROWW_BASE_URL}/v1/historical/candles"
-)
-
-GROWW_LTP_URL = (
-    f"{GROWW_BASE_URL}/v1/live-data/ltp"
-)
-
-INSTRUMENT_CSV_URL = (
+INSTRUMENT_URL = (
     "https://growwapi-assets.groww.in/instruments/instrument.csv"
 )
 
-HISTORY_REFRESH_SECONDS = 60
-LTP_REFRESH_SECONDS = 5
-
 HISTORY_SEGMENT = "CASH"
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)s | %(message)s"
+)
+
+logger = logging.getLogger("IndianFNOScanner")
+
+
+# ============================================================
+# FASTAPI
+# ============================================================
+
+app = FastAPI(
+    title="Indian F&O Scanner",
+    version="2.0.0"
+)
+
+
+# ============================================================
+# GLOBAL STATE
+# ============================================================
+
+STATE = {
+    "app": "Indian F&O Scanner",
+
+    "authenticated": False,
+    "instruments_loaded": False,
+
+    "fno_stock_count": 0,
+
+    "history_loaded": 0,
+    "history_failed": 0,
+
+    "last_history_update": None,
+    "last_ltp_update": None,
+
+    "market_status": "STARTING",
+
+    "live_prices": 0,
+
+    "last_error": None,
+
+    "token_expiry": None,
+    "session_name": None,
+
+    "fno_stocks": [],
+
+    "scanner_running": False,
+}
+
+
+INSTRUMENTS_DF = pd.DataFrame()
+
+FNO_STOCKS = []
+
+CASH_SYMBOLS = {}
+
+HISTORY = {}
+
+LIVE_LTP = {}
+
+HISTORY_FETCH_TIME = {}
+
+STATE_LOCK = threading.Lock()
+
+
+# ============================================================
+# SETTINGS
+# ============================================================
+
+SETTINGS = dict(DEFAULT_SETTINGS)
+
+
+# ============================================================
+# TIMEFRAME MAP
+# ============================================================
+
+TIMEFRAME_MAP = {
+    "1m": "1minute",
+    "2m": "2minute",
+    "3m": "3minute",
+    "5m": "5minute",
+    "10m": "10minute",
+    "15m": "15minute",
+    "30m": "30minute",
+    "1h": "1hour",
+    "4h": "4hour",
+    "1d": "1day",
+    "1w": "1week",
+}
 
 
 # ============================================================
 # HISTORY WINDOWS
 # ============================================================
 
-HISTORY_WINDOWS = {
+HISTORY_DAYS = {
     "1m": 7,
     "2m": 7,
     "3m": 7,
@@ -71,237 +150,30 @@ HISTORY_WINDOWS = {
 
 
 # ============================================================
-# LOGGING
+# TOKEN GENERATION
 # ============================================================
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s | %(levelname)s | %(message)s",
-)
+def generate_access_token() -> bool:
 
-logger = logging.getLogger(APP_NAME)
-
-
-# ============================================================
-# FASTAPI
-# ============================================================
-
-app = FastAPI(
-    title=APP_NAME,
-    version="4.1",
-)
-
-
-# ============================================================
-# GLOBAL STATE
-# ============================================================
-
-STATE: Dict[str, Any] = {
-    "access_token": None,
-    "token_created_at": None,
-
-    "authenticated": False,
-
-    "instruments_loaded": False,
-    "fno_stock_count": 0,
-
-    "history_loaded": 0,
-    "history_failed": 0,
-
-    "last_history_update": None,
-    "last_ltp_update": None,
-
-    "last_error": None,
-
-    "market_status": "STARTING",
-
-    "fno_stocks": [],
-}
-
-STATE_LOCK = threading.Lock()
-
-
-# ============================================================
-# GLOBAL DATA
-# ============================================================
-
-INSTRUMENTS_DF: Optional[pd.DataFrame] = None
-
-FNO_STOCKS: Dict[str, Dict[str, Any]] = {}
-
-CASH_SYMBOLS: Dict[str, str] = {}
-
-HISTORY: Dict[
-    str,
-    Dict[str, pd.DataFrame]
-] = {}
-
-LIVE_LTP: Dict[str, float] = {}
-
-HISTORY_FETCH_TIME: Dict[str, float] = {}
-
-
-# ============================================================
-# STRATEGY ENGINE
-# ============================================================
-
-ENGINE = ScannerEngine(
-    settings=dict(DEFAULT_SETTINGS)
-)
-
-
-# ============================================================
-# TIMEFRAME MAP
-# ============================================================
-
-GROWW_INTERVALS = {
-    "1m": "1minute",
-    "2m": "2minute",
-    "3m": "3minute",
-    "5m": "5minute",
-    "10m": "10minute",
-    "15m": "15minute",
-    "30m": "30minute",
-    "1h": "1hour",
-    "4h": "4hour",
-    "1d": "1day",
-    "1w": "1week",
-}
-
-
-def normalize_timeframe(
-    value: Any,
-    default: str = "5m",
-) -> str:
-
-    if value is None:
-        return default
-
-    value = str(value).strip().lower()
-
-    aliases = {
-        "1min": "1m",
-        "1minute": "1m",
-
-        "2min": "2m",
-        "2minute": "2m",
-
-        "3min": "3m",
-        "3minute": "3m",
-
-        "5min": "5m",
-        "5minute": "5m",
-
-        "10min": "10m",
-        "10minute": "10m",
-
-        "15min": "15m",
-        "15minute": "15m",
-
-        "30min": "30m",
-        "30minute": "30m",
-
-        "60min": "1h",
-        "60minute": "1h",
-        "1hour": "1h",
-
-        "4hour": "4h",
-
-        "1day": "1d",
-        "daily": "1d",
-
-        "1week": "1w",
-        "weekly": "1w",
-    }
-
-    return aliases.get(
-        value,
-        value if value in GROWW_INTERVALS else default,
-    )
-
-
-# ============================================================
-# SAFE HELPERS
-# ============================================================
-
-def safe_number(value: Any) -> Optional[float]:
-
-    try:
-        if pd.isna(value):
-            return None
-    except Exception:
-        pass
-
-    try:
-        return float(value)
-    except Exception:
-        return None
-
-
-def safe_string(value: Any) -> str:
-
-    try:
-        if pd.isna(value):
-            return ""
-    except Exception:
-        pass
-
-    return str(value).strip()
-
-
-# ============================================================
-# GROWW TOKEN GENERATION
-# ============================================================
-
-def generate_access_token() -> str:
-    """
-    Generate Groww access token using:
-
-        API KEY
-        API SECRET
-        timestamp
-        SHA256(secret + timestamp)
-
-    IMPORTANT:
-    Groww returns the token at the TOP LEVEL:
-
-        {
-            "token": "...",
-            "tokenRefId": "...",
-            "sessionName": "...",
-            "expiry": "...",
-            "active": true
-        }
-
-    Therefore we read data["token"].
-    """
+    global GROWW_API_KEY
+    global GROWW_API_SECRET
 
     if not GROWW_API_KEY:
-        raise RuntimeError(
-            "GROWW_API_KEY is missing from Render environment variables."
-        )
+        raise RuntimeError("GROWW_API_KEY is missing.")
 
     if not GROWW_API_SECRET:
-        raise RuntimeError(
-            "GROWW_API_SECRET is missing from Render environment variables."
-        )
+        raise RuntimeError("GROWW_API_SECRET is missing.")
 
-    timestamp = str(
-        int(time.time())
-    )
+    timestamp = str(int(time.time()))
 
-    checksum_string = (
-        GROWW_API_SECRET + timestamp
-    )
+    checksum_string = GROWW_API_SECRET + timestamp
 
     checksum = hashlib.sha256(
         checksum_string.encode("utf-8")
     ).hexdigest()
 
     headers = {
-        "Authorization": (
-            f"Bearer {GROWW_API_KEY}"
-        ),
+        "Authorization": f"Bearer {GROWW_API_KEY}",
         "Accept": "application/json",
         "X-API-VERSION": "1.0",
         "Content-Type": "application/json",
@@ -313,1915 +185,1263 @@ def generate_access_token() -> str:
         "timestamp": timestamp,
     }
 
+    logger.info("Requesting Groww access token...")
+
+    response = requests.post(
+        TOKEN_URL,
+        headers=headers,
+        json=payload,
+        timeout=30,
+    )
+
     logger.info(
-        "Requesting Groww access token..."
+        "Groww token HTTP status: %s",
+        response.status_code
     )
 
     try:
-
-        response = requests.post(
-            GROWW_TOKEN_URL,
-            headers=headers,
-            json=payload,
-            timeout=20,
-        )
-
-    except requests.RequestException as exc:
-
-        raise RuntimeError(
-            f"Groww token network error: {exc}"
-        ) from exc
+        data = response.json()
+    except Exception:
+        data = {}
 
     if response.status_code != 200:
-
         raise RuntimeError(
-            "Groww token HTTP "
-            f"{response.status_code}: "
-            f"{response.text[:1000]}"
+            f"Groww token HTTP {response.status_code}: "
+            f"{str(data)[:500]}"
         )
 
-    try:
-
-        data = response.json()
-
-    except Exception:
-
-        raise RuntimeError(
-            "Groww token endpoint returned "
-            f"invalid JSON: {response.text[:1000]}"
-        )
-
-    logger.info(
-        "Groww token response received."
-    )
-
     # --------------------------------------------------------
-    # IMPORTANT FIX
-    # --------------------------------------------------------
-    #
-    # Groww returns:
-    #
-    # {
-    #     "token": "...",
-    #     "tokenRefId": "...",
-    #     "sessionName": "...",
-    #     "expiry": "...",
-    #     "active": true
-    # }
-    #
-    # Token is NOT necessarily inside payload.
+    # IMPORTANT:
+    # Groww returns token directly at top level.
     # --------------------------------------------------------
 
     token = data.get("token")
 
-    # Fallback for alternative response formats.
+    # Compatibility fallback
     if not token:
+        nested = data.get("payload")
 
-        payload_data = data.get(
-            "payload"
-        )
-
-        if isinstance(
-            payload_data,
-            dict
-        ):
-
-            token = (
-                payload_data.get(
-                    "token"
-                )
-                or payload_data.get(
-                    "access_token"
-                )
-            )
+        if isinstance(nested, dict):
+            token = nested.get("token")
 
     if not token:
-
         raise RuntimeError(
-            "Groww authentication response "
-            "did not contain a token."
+            "Groww authentication response did not contain a token."
         )
-
-    # --------------------------------------------------------
-    # Store token
-    # --------------------------------------------------------
 
     with STATE_LOCK:
 
-        STATE[
-            "access_token"
-        ] = token
+        STATE["authenticated"] = True
 
-        STATE[
-            "token_created_at"
-        ] = datetime.utcnow().isoformat()
+        # NEVER expose token in dashboard/API
+        STATE["token_expiry"] = data.get("expiry")
 
-        STATE[
-            "authenticated"
-        ] = True
+        STATE["session_name"] = data.get("sessionName")
 
-        STATE[
-            "last_error"
-        ] = None
+        STATE["last_error"] = None
+
+    # Store token internally only
+    STATE["_access_token"] = token
 
     logger.info(
-        "Groww authentication successful."
+        "Groww authentication successful. Session=%s Expiry=%s",
+        data.get("sessionName"),
+        data.get("expiry"),
     )
 
-    logger.info(
-        "Groww session: %s",
-        data.get(
-            "sessionName",
-            "unknown",
-        ),
-    )
-
-    logger.info(
-        "Groww token expiry: %s",
-        data.get(
-            "expiry",
-            "unknown",
-        ),
-    )
-
-    return token
+    return True
 
 
 # ============================================================
-# GET ACCESS TOKEN
+# AUTH HEADERS
 # ============================================================
 
-def get_access_token(
-    force: bool = False,
-) -> str:
+def groww_headers():
 
-    with STATE_LOCK:
+    token = STATE.get("_access_token")
 
-        token = STATE.get(
-            "access_token"
+    if not token:
+        raise RuntimeError(
+            "Groww access token is not available."
         )
-
-    if token and not force:
-        return token
-
-    return generate_access_token()
-
-
-# ============================================================
-# GROWW API HEADERS
-# ============================================================
-
-def groww_headers() -> Dict[str, str]:
-
-    token = get_access_token()
 
     return {
-        "Authorization": (
-            f"Bearer {token}"
-        ),
+        "Authorization": f"Bearer {token}",
         "Accept": "application/json",
         "X-API-VERSION": "1.0",
     }
 
 
 # ============================================================
-# GROWW GET REQUEST
+# GROWw GET
 # ============================================================
 
 def groww_get(
     url: str,
-    params: Optional[
-        Dict[str, Any]
-    ] = None,
-    timeout: int = 30,
-    retry_auth: bool = True,
-) -> Dict[str, Any]:
+    params: Optional[dict] = None,
+    retry_auth: bool = True
+):
 
-    try:
+    response = requests.get(
+        url,
+        headers=groww_headers(),
+        params=params,
+        timeout=30,
+    )
 
-        response = requests.get(
-            url,
-            params=params,
-            headers=groww_headers(),
-            timeout=timeout,
+    # Token may have expired
+    if response.status_code in (401, 403):
+
+        logger.warning(
+            "Groww returned %s. Refreshing token...",
+            response.status_code
         )
 
-        # ----------------------------------------------------
-        # Retry authentication once for auth errors.
-        # ----------------------------------------------------
+        if retry_auth:
 
-        if (
-            response.status_code in (401, 403)
-            and retry_auth
-        ):
-
-            logger.warning(
-                "Groww returned HTTP %s. "
-                "Refreshing access token...",
-                response.status_code,
-            )
-
-            get_access_token(
-                force=True
-            )
+            generate_access_token()
 
             response = requests.get(
                 url,
-                params=params,
                 headers=groww_headers(),
-                timeout=timeout,
+                params=params,
+                timeout=30,
             )
 
-        if response.status_code != 200:
+    return response
 
-            try:
-                error_body = response.json()
-            except Exception:
-                error_body = response.text
 
-            raise RuntimeError(
-                f"Groww HTTP "
-                f"{response.status_code}: "
-                f"{error_body}"
-            )
+# ============================================================
+# TEST AUTHENTICATION + USER DETAIL
+# ============================================================
 
-        try:
+def test_groww_connection():
 
-            data = response.json()
+    generate_access_token()
 
-        except Exception:
+    response = groww_get(
+        USER_DETAIL_URL,
+        retry_auth=False
+    )
 
-            raise RuntimeError(
-                "Groww returned invalid JSON: "
-                f"{response.text[:1000]}"
-            )
+    try:
+        data = response.json()
+    except Exception:
+        data = {}
 
-        if data.get("status") == "FAILURE":
-
-            raise RuntimeError(
-                f"Groww API failure: {data}"
-            )
-
-        return data
-
-    except requests.RequestException as exc:
+    if response.status_code != 200:
 
         raise RuntimeError(
-            f"Groww network error: {exc}"
-        ) from exc
+            f"Groww token generated but API test failed. "
+            f"HTTP {response.status_code}: {str(data)[:500]}"
+        )
+
+    logger.info(
+        "Groww user API test successful."
+    )
+
+    return data
 
 
 # ============================================================
-# LOAD GROWW INSTRUMENT CSV
+# LOAD GROWw INSTRUMENTS
 # ============================================================
 
-def load_instruments() -> pd.DataFrame:
+def load_instruments():
 
     global INSTRUMENTS_DF
 
     logger.info(
-        "Downloading Groww instrument CSV..."
+        "Downloading Groww instrument file..."
     )
 
-    try:
+    response = requests.get(
+        INSTRUMENT_URL,
+        timeout=60,
+    )
 
-        response = requests.get(
-            INSTRUMENT_CSV_URL,
-            timeout=60,
-        )
-
-        response.raise_for_status()
-
-    except requests.RequestException as exc:
-
-        raise RuntimeError(
-            f"Could not download Groww instrument CSV: {exc}"
-        ) from exc
+    response.raise_for_status()
 
     from io import StringIO
 
-    try:
-
-        df = pd.read_csv(
-            StringIO(
-                response.text
-            ),
-            low_memory=False,
-        )
-
-    except Exception as exc:
-
-        raise RuntimeError(
-            f"Could not parse Groww instrument CSV: {exc}"
-        ) from exc
-
-    df.columns = [
-        str(column)
-        .strip()
-        .lower()
-        for column in df.columns
-    ]
-
-    logger.info(
-        "Groww instruments loaded: %s rows",
-        len(df),
+    df = pd.read_csv(
+        StringIO(response.text)
     )
 
+    df.columns = [
+        str(c).strip().lower()
+        for c in df.columns
+    ]
+
     INSTRUMENTS_DF = df
+
+    STATE["instruments_loaded"] = True
+
+    logger.info(
+        "Instrument file loaded: %s rows",
+        len(df)
+    )
 
     return df
 
 
 # ============================================================
-# BUILD NSE F&O STOCK UNIVERSE
+# FIND COLUMN
 # ============================================================
 
-def build_fno_stock_universe(
-    df: pd.DataFrame,
-) -> Dict[str, Dict[str, Any]]:
+def find_column(df, names):
 
-    required_columns = {
-        "exchange",
-        "segment",
-        "trading_symbol",
-    }
+    for name in names:
 
-    missing = (
-        required_columns
-        - set(df.columns)
-    )
+        if name in df.columns:
+            return name
 
-    if missing:
+    return None
 
+
+# ============================================================
+# BUILD F&O STOCK UNIVERSE
+# ============================================================
+
+def build_fno_stock_universe():
+
+    global FNO_STOCKS
+
+    df = INSTRUMENTS_DF.copy()
+
+    if df.empty:
         raise RuntimeError(
-            "Groww instrument CSV is missing "
-            f"columns: {sorted(missing)}"
+            "Instrument file is empty."
         )
 
-    work = df.copy()
-
-    work["exchange"] = (
-        work["exchange"]
-        .astype(str)
-        .str.upper()
-        .str.strip()
+    exchange_col = find_column(
+        df,
+        [
+            "exchange",
+            "exchange_name",
+        ]
     )
 
-    work["segment"] = (
-        work["segment"]
-        .astype(str)
-        .str.upper()
-        .str.strip()
+    segment_col = find_column(
+        df,
+        [
+            "segment",
+            "segment_name",
+        ]
     )
 
-    work["trading_symbol"] = (
-        work["trading_symbol"]
-        .astype(str)
-        .str.upper()
-        .str.strip()
+    symbol_col = find_column(
+        df,
+        [
+            "trading_symbol",
+            "symbol",
+            "tradingsymbol",
+        ]
     )
 
-    # --------------------------------------------------------
-    # NSE FNO
-    # --------------------------------------------------------
+    underlying_col = find_column(
+        df,
+        [
+            "underlying_symbol",
+            "underlying",
+            "underlying_asset",
+        ]
+    )
 
-    fno = work[
-        (
-            work["exchange"]
-            == "NSE"
+    if not exchange_col:
+        raise RuntimeError(
+            "Exchange column not found in Groww instrument file."
         )
-        &
+
+    if not segment_col:
+        raise RuntimeError(
+            "Segment column not found in Groww instrument file."
+        )
+
+    if not symbol_col:
+        raise RuntimeError(
+            "Trading symbol column not found."
+        )
+
+    temp = df.copy()
+
+    temp[exchange_col] = (
+        temp[exchange_col]
+        .astype(str)
+        .str.upper()
+        .str.strip()
+    )
+
+    temp[segment_col] = (
+        temp[segment_col]
+        .astype(str)
+        .str.upper()
+        .str.strip()
+    )
+
+    fno = temp[
+        (temp[exchange_col] == "NSE") &
         (
-            work["segment"]
-            == "FNO"
+            temp[segment_col].str.contains(
+                "FNO|NFO",
+                regex=True,
+                na=False
+            )
         )
     ].copy()
 
     if fno.empty:
 
-        raise RuntimeError(
-            "No NSE F&O instruments found "
-            "in Groww instrument CSV."
-        )
+        # Compatibility if segment is simply "FNO"
+        fno = temp[
+            temp[segment_col] == "FNO"
+        ].copy()
 
-    # --------------------------------------------------------
-    # Index derivatives excluded.
-    # We want individual F&O stocks.
-    # --------------------------------------------------------
-
-    index_symbols = {
-        "NIFTY",
-        "BANKNIFTY",
-        "FINNIFTY",
-        "MIDCPNIFTY",
-        "NIFTYNXT50",
-        "NIFTYIT",
-        "NIFTYPHARMA",
-        "NIFTYAUTO",
-        "NIFTYFMCG",
-        "NIFTYMETAL",
-        "NIFTYREALTY",
-        "NIFTYENERGY",
-        "NIFTYINFRA",
-        "NIFTYMIDCAP",
-        "NIFTYSMALLCAP",
-        "NIFTY100",
-        "NIFTY200",
-        "NIFTY500",
-    }
-
-    # --------------------------------------------------------
-    # Underlying symbol
-    # --------------------------------------------------------
-
-    if (
-        "underlying_symbol"
-        in fno.columns
-    ):
-
-        fno[
-            "underlying_symbol_clean"
-        ] = (
-            fno[
-                "underlying_symbol"
-            ]
-            .astype(str)
-            .str.upper()
-            .str.strip()
-        )
-
-        fno[
-            "underlying_symbol_clean"
-        ] = (
-            fno[
-                "underlying_symbol_clean"
-            ].replace(
-                {
-                    "NAN": "",
-                    "NONE": "",
-                    "NULL": "",
-                }
-            )
-        )
-
-    else:
-
-        fno[
-            "underlying_symbol_clean"
-        ] = ""
-
-    universe = {}
+    stocks = set()
 
     for _, row in fno.iterrows():
 
-        symbol = safe_string(
-            row.get(
-                "underlying_symbol_clean"
-            )
-        ).upper()
-
-        trading_symbol = safe_string(
-            row.get(
-                "trading_symbol"
-            )
-        ).upper()
-
-        # Fallback.
-        if not symbol:
-
-            symbol = trading_symbol
-
-            if symbol.endswith(
-                "FUT"
-            ):
-                symbol = symbol[:-3]
+        symbol = str(
+            row.get(symbol_col, "")
+        ).strip().upper()
 
         if not symbol:
             continue
 
-        if symbol in index_symbols:
+        # Ignore obvious index contracts
+        index_names = {
+            "NIFTY",
+            "BANKNIFTY",
+            "FINNIFTY",
+            "MIDCPNIFTY",
+            "SENSEX",
+        }
+
+        if symbol in index_names:
             continue
 
-        if symbol in {
-            "NAN",
-            "NONE",
-            "NULL",
-        }:
-            continue
+        underlying = ""
 
-        if symbol not in universe:
+        if underlying_col:
+            underlying = str(
+                row.get(
+                    underlying_col,
+                    ""
+                )
+            ).strip().upper()
 
-            universe[symbol] = {
-                "symbol": symbol,
+        if underlying:
 
-                "name": safe_string(
-                    row.get(
-                        "name",
-                        symbol,
-                    )
-                ),
+            # Ignore index underlyings
+            if underlying in index_names:
+                continue
 
-                "exchange": "NSE",
+            stocks.add(underlying)
 
-                "segment": "FNO",
+        else:
 
-                "fno_trading_symbol": (
-                    trading_symbol
-                ),
+            # Try to remove FUT suffix
+            clean = symbol
 
-                "lot_size": safe_number(
-                    row.get(
-                        "lot_size"
-                    )
-                ),
+            for suffix in [
+                "FUT",
+                "-FUT",
+            ]:
 
-                "expiry_date": safe_string(
-                    row.get(
-                        "expiry_date"
-                    )
-                ),
-            }
+                if clean.endswith(suffix):
+
+                    clean = clean[:-len(suffix)]
+
+            if clean:
+                stocks.add(clean)
+
+    FNO_STOCKS = sorted(stocks)
+
+    STATE["fno_stock_count"] = len(FNO_STOCKS)
+
+    STATE["fno_stocks"] = FNO_STOCKS
 
     logger.info(
-        "NSE F&O stock universe: %s stocks",
-        len(universe),
+        "F&O stock universe created: %s stocks",
+        len(FNO_STOCKS)
     )
 
-    return universe
+    return FNO_STOCKS
 
 
 # ============================================================
 # BUILD CASH SYMBOL MAP
 # ============================================================
 
-def build_cash_symbol_map(
-    df: pd.DataFrame,
-    universe: Dict[
-        str,
-        Dict[str, Any]
-    ],
-) -> Dict[str, str]:
+def build_cash_symbol_map():
 
-    result = {}
+    global CASH_SYMBOLS
 
-    cash = df[
-        (
-            df["exchange"]
-            .astype(str)
-            .str.upper()
-            == "NSE"
-        )
-        &
-        (
-            df["segment"]
-            .astype(str)
-            .str.upper()
-            == "CASH"
-        )
-    ].copy()
+    CASH_SYMBOLS = {}
 
-    cash["trading_symbol"] = (
-        cash["trading_symbol"]
-        .astype(str)
-        .str.upper()
-        .str.strip()
+    for symbol in FNO_STOCKS:
+
+        CASH_SYMBOLS[symbol] = f"NSE-{symbol}"
+
+    logger.info(
+        "Cash symbol map created: %s",
+        len(CASH_SYMBOLS)
     )
-
-    has_groww_symbol = (
-        "groww_symbol"
-        in cash.columns
-    )
-
-    if has_groww_symbol:
-
-        cash[
-            "groww_symbol"
-        ] = (
-            cash[
-                "groww_symbol"
-            ]
-            .astype(str)
-            .str.strip()
-        )
-
-    for symbol in universe:
-
-        matches = cash[
-            cash[
-                "trading_symbol"
-            ]
-            == symbol
-        ]
-
-        if matches.empty:
-
-            result[
-                symbol
-            ] = f"NSE-{symbol}"
-
-            continue
-
-        row = matches.iloc[0]
-
-        if has_groww_symbol:
-
-            groww_symbol = safe_string(
-                row.get(
-                    "groww_symbol"
-                )
-            )
-
-        else:
-
-            groww_symbol = ""
-
-        if not groww_symbol:
-
-            groww_symbol = (
-                f"NSE-{symbol}"
-            )
-
-        result[
-            symbol
-        ] = groww_symbol
-
-    return result
 
 
 # ============================================================
-# TIME WINDOW
+# FETCH HISTORICAL CANDLES
 # ============================================================
 
-def history_start_end(
-    timeframe: str,
+def fetch_history(
+    symbol: str,
+    timeframe: str
 ):
 
-    days = HISTORY_WINDOWS.get(
+    if timeframe not in TIMEFRAME_MAP:
+        raise ValueError(
+            f"Unsupported timeframe: {timeframe}"
+        )
+
+    candle_interval = TIMEFRAME_MAP[
+        timeframe
+    ]
+
+    days = HISTORY_DAYS.get(
         timeframe,
-        30,
+        30
     )
 
-    end = datetime.now()
+    end_dt = datetime.utcnow()
 
-    start = (
-        end
-        - timedelta(
-            days=days
-        )
+    start_dt = (
+        end_dt -
+        timedelta(days=days)
     )
 
-    return (
-        start.strftime(
+    groww_symbol = CASH_SYMBOLS.get(
+        symbol,
+        f"NSE-{symbol}"
+    )
+
+    params = {
+        "exchange": "NSE",
+        "segment": HISTORY_SEGMENT,
+        "groww_symbol": groww_symbol,
+        "start_time": start_dt.strftime(
             "%Y-%m-%d %H:%M:%S"
         ),
-        end.strftime(
+        "end_time": end_dt.strftime(
             "%Y-%m-%d %H:%M:%S"
         ),
+        "candle_interval": candle_interval,
+    }
+
+    response = groww_get(
+        HISTORICAL_URL,
+        params=params
     )
 
+    if response.status_code != 200:
 
-# ============================================================
-# PARSE GROWW CANDLES
-# ============================================================
-
-def parse_groww_candles(
-    data: Dict[str, Any],
-) -> pd.DataFrame:
-
-    payload = data.get(
-        "payload",
-        {}
-    )
-
-    candles = []
-
-    if isinstance(
-        payload,
-        dict,
-    ):
-
-        candles = payload.get(
-            "candles",
-            []
+        raise RuntimeError(
+            f"History HTTP {response.status_code} "
+            f"for {symbol} {timeframe}: "
+            f"{response.text[:300]}"
         )
 
-    elif isinstance(
-        payload,
-        list,
-    ):
+    data = response.json()
 
-        candles = payload
+    # --------------------------------------------------------
+    # Groww historical response compatibility
+    # --------------------------------------------------------
 
-    # Some APIs can return candles directly.
+    candles = None
+
+    if isinstance(data, list):
+        candles = data
+
+    elif isinstance(data, dict):
+
+        if isinstance(
+            data.get("payload"),
+            list
+        ):
+            candles = data["payload"]
+
+        elif isinstance(
+            data.get("candles"),
+            list
+        ):
+            candles = data["candles"]
+
+        elif isinstance(
+            data.get("data"),
+            list
+        ):
+            candles = data["data"]
+
+        elif isinstance(
+            data.get("payload"),
+            dict
+        ):
+
+            payload = data["payload"]
+
+            if isinstance(
+                payload.get("candles"),
+                list
+            ):
+                candles = payload["candles"]
+
     if not candles:
 
-        candles = data.get(
-            "candles",
-            []
-        )
-
-    if not candles:
-
-        return pd.DataFrame(
-            columns=[
-                "timestamp",
-                "open",
-                "high",
-                "low",
-                "close",
-                "volume",
-                "oi",
-            ]
+        raise RuntimeError(
+            f"No candles returned for "
+            f"{symbol} {timeframe}"
         )
 
     rows = []
 
     for candle in candles:
 
-        if isinstance(
+        if not isinstance(
             candle,
-            dict,
+            (list, tuple)
         ):
+            continue
 
-            timestamp = (
-                candle.get(
-                    "timestamp"
-                )
-                or candle.get(
-                    "time"
-                )
-                or candle.get(
-                    "ts"
-                )
-            )
+        if len(candle) < 5:
+            continue
 
-            open_price = candle.get(
-                "open"
-            )
+        # Standard Groww candle:
+        # timestamp, open, high, low, close, volume
 
-            high_price = candle.get(
-                "high"
-            )
-
-            low_price = candle.get(
-                "low"
-            )
-
-            close_price = candle.get(
-                "close"
-            )
-
-            volume = candle.get(
-                "volume",
-                0,
-            )
-
-            oi = (
-                candle.get(
-                    "oi"
-                )
-                or candle.get(
-                    "open_interest"
-                )
-            )
-
-        elif isinstance(
-            candle,
-            (
-                list,
-                tuple,
-            ),
-        ):
-
-            if len(candle) < 5:
-                continue
+        try:
 
             timestamp = candle[0]
-            open_price = candle[1]
-            high_price = candle[2]
-            low_price = candle[3]
-            close_price = candle[4]
+            open_price = float(candle[1])
+            high_price = float(candle[2])
+            low_price = float(candle[3])
+            close_price = float(candle[4])
 
             volume = (
-                candle[5]
+                float(candle[5])
                 if len(candle) > 5
                 else 0
             )
 
-            oi = (
-                candle[6]
-                if len(candle) > 6
-                else None
+            rows.append(
+                {
+                    "timestamp": timestamp,
+                    "open": open_price,
+                    "high": high_price,
+                    "low": low_price,
+                    "close": close_price,
+                    "volume": volume,
+                }
             )
 
-        else:
-
+        except Exception:
             continue
-
-        rows.append(
-            {
-                "timestamp": timestamp,
-
-                "open": safe_number(
-                    open_price
-                ),
-
-                "high": safe_number(
-                    high_price
-                ),
-
-                "low": safe_number(
-                    low_price
-                ),
-
-                "close": safe_number(
-                    close_price
-                ),
-
-                "volume": (
-                    safe_number(
-                        volume
-                    )
-                    or 0
-                ),
-
-                "oi": safe_number(
-                    oi
-                ),
-            }
-        )
 
     if not rows:
 
-        return pd.DataFrame()
+        raise RuntimeError(
+            f"Could not parse candles for "
+            f"{symbol} {timeframe}"
+        )
 
-    result = pd.DataFrame(
-        rows
+    df = pd.DataFrame(rows)
+
+    df["timestamp"] = pd.to_datetime(
+        df["timestamp"],
+        errors="coerce"
     )
 
-    result[
-        "timestamp"
-    ] = pd.to_datetime(
-        result[
-            "timestamp"
-        ],
-        errors="coerce",
+    df = df.dropna(
+        subset=["timestamp"]
     )
 
-    result = result.dropna(
-        subset=[
-            "timestamp",
-            "open",
-            "high",
-            "low",
-            "close",
-        ]
-    )
-
-    result = result.sort_values(
+    df = df.sort_values(
         "timestamp"
     )
 
-    result = result.drop_duplicates(
-        subset=[
-            "timestamp"
-        ],
-        keep="last",
+    df = df.drop_duplicates(
+        subset=["timestamp"]
     )
 
-    result = result.reset_index(
+    df = df.reset_index(
         drop=True
     )
 
-    return result
-
-
-# ============================================================
-# FETCH HISTORICAL DATA
-# ============================================================
-
-def fetch_history(
-    symbol: str,
-    timeframe: str,
-    force: bool = False,
-) -> pd.DataFrame:
-
-    timeframe = normalize_timeframe(
-        timeframe
-    )
-
-    interval = GROWW_INTERVALS.get(
-        timeframe
-    )
-
-    if not interval:
-
-        raise RuntimeError(
-            f"Unsupported timeframe: "
-            f"{timeframe}"
-        )
-
-    cache_key = (
-        f"{symbol}:{timeframe}"
-    )
-
-    now = time.time()
-
-    if not force:
-
-        last_fetch = (
-            HISTORY_FETCH_TIME.get(
-                cache_key,
-                0,
-            )
-        )
-
-        if (
-            now - last_fetch
-            < HISTORY_REFRESH_SECONDS
-        ):
-
-            existing = (
-                HISTORY
-                .get(
-                    symbol,
-                    {}
-                )
-                .get(
-                    timeframe
-                )
-            )
-
-            if existing is not None:
-                return existing
-
-    groww_symbol = (
-        CASH_SYMBOLS.get(
-            symbol,
-            f"NSE-{symbol}",
-        )
-    )
-
-    start_time, end_time = (
-        history_start_end(
-            timeframe
-        )
-    )
-
-    params = {
-        "exchange": "NSE",
-        "segment": "CASH",
-        "groww_symbol": groww_symbol,
-        "start_time": start_time,
-        "end_time": end_time,
-        "candle_interval": interval,
-    }
-
-    logger.info(
-        "History request | %s | %s | %s",
-        symbol,
-        groww_symbol,
-        timeframe,
-    )
-
-    try:
-
-        data = groww_get(
-            GROWW_HISTORICAL_URL,
-            params=params,
-            timeout=40,
-        )
-
-        candles = parse_groww_candles(
-            data
-        )
-
-        if candles.empty:
-
-            raise RuntimeError(
-                "Groww returned zero candles."
-            )
-
-        HISTORY.setdefault(
-            symbol,
-            {}
-        )[timeframe] = candles
-
-        HISTORY_FETCH_TIME[
-            cache_key
-        ] = time.time()
-
-        return candles
-
-    except Exception as exc:
-
-        logger.error(
-            "History error | %s | %s | %s | %s",
-            symbol,
-            groww_symbol,
-            timeframe,
-            exc,
-        )
-
-        with STATE_LOCK:
-
-            STATE[
-                "last_error"
-            ] = str(exc)
-
-        raise
-
-
-# ============================================================
-# LOAD HISTORY FOR ONE STOCK
-# ============================================================
-
-def load_stock_history(
-    symbol: str,
-    settings: Dict[str, Any],
-):
-
-    entry_tf = normalize_timeframe(
-        settings.get(
-            "entry_timeframe",
-            "5m",
-        ),
-        "5m",
-    )
-
-    wave_tf = normalize_timeframe(
-        settings.get(
-            "wave_timeframe",
-            "15m",
-        ),
-        "15m",
-    )
-
-    tide_tf = normalize_timeframe(
-        settings.get(
-            "tide_timeframe",
-            "1h",
-        ),
-        "1h",
-    )
-
-    timeframes = []
-
-    for timeframe in (
-        entry_tf,
-        wave_tf,
-        tide_tf,
-    ):
-
-        if timeframe not in timeframes:
-            timeframes.append(
-                timeframe
-            )
-
-    success = 0
-
-    for timeframe in timeframes:
-
-        try:
-
-            candles = fetch_history(
-                symbol,
-                timeframe,
-                force=True,
-            )
-
-            if (
-                candles is not None
-                and not candles.empty
-            ):
-
-                success += 1
-
-        except Exception:
-
-            continue
-
-    return (
-        success,
-        len(timeframes),
-    )
+    return df
 
 
 # ============================================================
 # LOAD ALL HISTORY
 # ============================================================
 
-def load_all_history(
-    settings: Optional[
-        Dict[str, Any]
-    ] = None,
-):
+def load_all_history():
 
-    if settings is None:
-        settings = ENGINE.settings
+    global HISTORY
 
-    symbols = list(
-        FNO_STOCKS.keys()
+    HISTORY = {}
+
+    entry_tf = SETTINGS.get(
+        "entry_timeframe",
+        "5m"
     )
 
-    total_success = 0
-    total_failed = 0
+    wave_tf = SETTINGS.get(
+        "wave_timeframe",
+        "15m"
+    )
+
+    tide_tf = SETTINGS.get(
+        "tide_timeframe",
+        "1h"
+    )
+
+    timeframes = list(
+        dict.fromkeys(
+            [
+                entry_tf,
+                wave_tf,
+                tide_tf,
+            ]
+        )
+    )
+
+    total = len(FNO_STOCKS)
+
+    loaded = 0
+    failed = 0
 
     logger.info(
-        "Starting history load for %s stocks...",
-        len(symbols),
+        "Starting historical loading: "
+        "%s stocks x %s timeframes",
+        total,
+        len(timeframes)
     )
 
     for index, symbol in enumerate(
-        symbols,
-        start=1,
+        FNO_STOCKS,
+        start=1
     ):
 
-        try:
+        HISTORY[symbol] = {}
 
-            success, total = (
-                load_stock_history(
+        stock_success = True
+
+        for timeframe in timeframes:
+
+            try:
+
+                df = fetch_history(
                     symbol,
-                    settings,
+                    timeframe
                 )
-            )
 
-            if success > 0:
+                HISTORY[symbol][
+                    timeframe
+                ] = df
 
-                total_success += 1
+                logger.info(
+                    "[%s/%s] %s %s candles=%s",
+                    index,
+                    total,
+                    symbol,
+                    timeframe,
+                    len(df)
+                )
 
-            else:
+            except Exception as exc:
 
-                total_failed += 1
+                stock_success = False
 
-        except Exception as exc:
+                logger.warning(
+                    "[%s/%s] %s %s FAILED: %s",
+                    index,
+                    total,
+                    symbol,
+                    timeframe,
+                    exc
+                )
 
-            total_failed += 1
+            # Small throttle
+            time.sleep(0.12)
 
-            logger.error(
-                "Stock history failed | %s | %s",
-                symbol,
-                exc,
-            )
+        if stock_success:
+            loaded += 1
+        else:
+            failed += 1
 
-        # Small throttle.
-        time.sleep(
-            0.08
-        )
+        with STATE_LOCK:
 
-        if index % 10 == 0:
+            STATE["history_loaded"] = loaded
+            STATE["history_failed"] = failed
 
-            logger.info(
-                "History progress %s/%s | loaded=%s | failed=%s",
-                index,
-                len(symbols),
-                total_success,
-                total_failed,
-            )
+        # Do not overload Render / Groww
+        time.sleep(0.05)
 
-    with STATE_LOCK:
-
-        STATE[
-            "history_loaded"
-        ] = total_success
-
-        STATE[
-            "history_failed"
-        ] = total_failed
-
-        STATE[
-            "last_history_update"
-        ] = datetime.utcnow().isoformat()
+    STATE["last_history_update"] = (
+        datetime.utcnow().isoformat()
+    )
 
     logger.info(
-        "History load complete | "
-        "loaded=%s | failed=%s",
-        total_success,
-        total_failed,
+        "History loading completed. "
+        "Success=%s Failed=%s",
+        loaded,
+        failed
     )
 
 
 # ============================================================
-# LIVE LTP
+# LTP BATCH
 # ============================================================
 
 def fetch_ltp_batch(
-    symbols: List[str],
-) -> Dict[str, float]:
+    symbols
+):
+
+    if not symbols:
+        return {}
+
+    exchange_symbols = []
+
+    symbol_map = {}
+
+    for symbol in symbols:
+
+        exchange_symbol = symbol
+
+        exchange_symbols.append(
+            exchange_symbol
+        )
+
+        symbol_map[
+            exchange_symbol
+        ] = symbol
+
+    params = {
+        "segment": "CASH",
+        "exchange_symbols": ",".join(
+            exchange_symbols
+        ),
+    }
+
+    response = groww_get(
+        LTP_URL,
+        params=params
+    )
+
+    if response.status_code != 200:
+
+        raise RuntimeError(
+            f"LTP HTTP {response.status_code}: "
+            f"{response.text[:300]}"
+        )
+
+    data = response.json()
 
     result = {}
 
-    if not symbols:
-        return result
+    payload = data
 
-    # Maximum 50 symbols per request.
-    for start in range(
-        0,
-        len(symbols),
-        50,
-    ):
+    if isinstance(data, dict):
 
-        batch = symbols[
-            start:start + 50
-        ]
+        if isinstance(
+            data.get("payload"),
+            dict
+        ):
+            payload = data["payload"]
 
-        exchange_symbols = ",".join(
-            f"NSE_{symbol}"
-            for symbol in batch
-        )
+        elif isinstance(
+            data.get("data"),
+            dict
+        ):
+            payload = data["data"]
 
-        params = {
-            "segment": "CASH",
-            "exchange_symbols": exchange_symbols,
-        }
+    if isinstance(payload, dict):
 
-        try:
+        for exchange_symbol, value in payload.items():
 
-            data = groww_get(
-                GROWW_LTP_URL,
-                params=params,
-                timeout=20,
+            symbol = symbol_map.get(
+                exchange_symbol
             )
 
-            payload = data.get(
-                "payload",
-                {}
-            )
+            if symbol is None:
+                continue
 
-            if isinstance(
-                payload,
-                dict,
-            ):
+            try:
 
-                for key, value in (
-                    payload.items()
+                if isinstance(
+                    value,
+                    dict
                 ):
 
-                    symbol = str(
-                        key
+                    price = (
+                        value.get("ltp")
+                        or
+                        value.get("last_price")
+                        or
+                        value.get("price")
                     )
 
-                    if symbol.startswith(
-                        "NSE_"
-                    ):
+                else:
 
-                        symbol = (
-                            symbol[4:]
-                        )
+                    price = value
 
-                    price = safe_number(
-                        value
+                if price is not None:
+
+                    result[symbol] = float(
+                        price
                     )
 
-                    if price is not None:
-
-                        result[
-                            symbol
-                        ] = price
-
-        except Exception as exc:
-
-            logger.error(
-                "LTP batch error: %s",
-                exc,
-            )
-
-            with STATE_LOCK:
-
-                STATE[
-                    "last_error"
-                ] = str(exc)
-
-        time.sleep(
-            0.10
-        )
+            except Exception:
+                continue
 
     return result
 
 
+# ============================================================
+# UPDATE LIVE PRICES
+# ============================================================
+
 def update_live_prices():
 
-    symbols = list(
-        FNO_STOCKS.keys()
-    )
+    global LIVE_LTP
 
-    if not symbols:
+    if not FNO_STOCKS:
         return
 
-    ltp_data = fetch_ltp_batch(
-        symbols
-    )
+    all_prices = {}
 
-    if ltp_data:
+    # Groww allows max 50 instruments
+    batch_size = 50
 
-        LIVE_LTP.update(
-            ltp_data
-        )
-
-        with STATE_LOCK:
-
-            STATE[
-                "last_ltp_update"
-            ] = datetime.utcnow().isoformat()
-
-
-# ============================================================
-# SYNC DATA INTO STRATEGY ENGINE
-# ============================================================
-
-def sync_engine_history():
-
-    for symbol in list(
-        FNO_STOCKS.keys()
+    for i in range(
+        0,
+        len(FNO_STOCKS),
+        batch_size
     ):
 
-        frames = HISTORY.get(
-            symbol,
-            {}
-        )
+        batch_symbols = FNO_STOCKS[
+            i:i + batch_size
+        ]
 
-        if not frames:
-            continue
+        exchange_symbols = [
+            f"NSE_{symbol}"
+            for symbol in batch_symbols
+        ]
+
+        # ----------------------------------------------------
+        # Important:
+        # Groww LTP API expects NSE_RELIANCE format.
+        # ----------------------------------------------------
 
         try:
 
-            if hasattr(
-                ENGINE,
-                "set_history",
-            ):
+            params = {
+                "segment": "CASH",
+                "exchange_symbols": ",".join(
+                    exchange_symbols
+                ),
+            }
 
-                ENGINE.set_history(
-                    symbol,
-                    frames,
+            response = groww_get(
+                LTP_URL,
+                params=params
+            )
+
+            if response.status_code != 200:
+
+                logger.warning(
+                    "LTP batch failed: HTTP %s",
+                    response.status_code
                 )
 
-            elif hasattr(
-                ENGINE,
-                "histories",
-            ):
+                continue
 
-                ENGINE.histories[
-                    symbol
-                ] = frames
+            data = response.json()
+
+            payload = data
+
+            if isinstance(data, dict):
+
+                if isinstance(
+                    data.get("payload"),
+                    dict
+                ):
+                    payload = data["payload"]
+
+                elif isinstance(
+                    data.get("data"),
+                    dict
+                ):
+                    payload = data["data"]
+
+            if isinstance(payload, dict):
+
+                for exchange_symbol, value in payload.items():
+
+                    if not isinstance(
+                        value,
+                        dict
+                    ):
+                        price = value
+
+                    else:
+
+                        price = (
+                            value.get("ltp")
+                            or
+                            value.get("last_price")
+                            or
+                            value.get("price")
+                        )
+
+                    if price is None:
+                        continue
+
+                    exchange_symbol = str(
+                        exchange_symbol
+                    ).upper()
+
+                    if exchange_symbol.startswith(
+                        "NSE_"
+                    ):
+
+                        symbol = exchange_symbol[
+                            4:
+                        ]
+
+                        try:
+
+                            all_prices[
+                                symbol
+                            ] = float(price)
+
+                        except Exception:
+                            pass
 
         except Exception as exc:
 
             logger.warning(
-                "Engine history sync error | %s | %s",
-                symbol,
-                exc,
+                "LTP batch exception: %s",
+                exc
             )
+
+        time.sleep(0.12)
+
+    LIVE_LTP = all_prices
+
+    STATE["live_prices"] = len(
+        LIVE_LTP
+    )
+
+    STATE["last_ltp_update"] = (
+        datetime.utcnow().isoformat()
+    )
 
 
 # ============================================================
-# CALCULATE SCANNER
+# SCANNER CALCULATION
 # ============================================================
 
 def calculate_scanner():
 
-    rows = []
+    results = []
 
-    symbols = list(
-        FNO_STOCKS.keys()
+    if not HISTORY:
+
+        return results
+
+    engine = ScannerEngine(
+        SETTINGS
     )
 
-    for symbol in symbols:
-
-        meta = FNO_STOCKS.get(
-            symbol,
-            {}
-        )
-
-        price = LIVE_LTP.get(
-            symbol
-        )
-
-        frames = HISTORY.get(
-            symbol,
-            {}
-        )
-
-        result = None
+    for symbol in FNO_STOCKS:
 
         try:
 
+            symbol_history = HISTORY.get(
+                symbol,
+                {}
+            )
+
+            if not symbol_history:
+                continue
+
+            result = None
+
+            # ------------------------------------------------
+            # Support multiple strategy.py versions
+            # ------------------------------------------------
+
             if hasattr(
-                ENGINE,
-                "analyze_symbol",
+                engine,
+                "analyze_symbol"
             ):
 
-                result = (
-                    ENGINE.analyze_symbol(
-                        symbol,
-                        live_price=price,
-                    )
-                )
-
-            elif hasattr(
-                ENGINE,
-                "scan_symbol",
-            ):
-
-                result = (
-                    ENGINE.scan_symbol(
-                        symbol,
-                        live_price=price,
-                    )
-                )
-
-            elif hasattr(
-                ENGINE,
-                "analyze",
-            ):
-
-                result = ENGINE.analyze(
+                result = engine.analyze_symbol(
                     symbol,
-                    live_price=price,
+                    symbol_history,
+                    LIVE_LTP.get(symbol)
                 )
+
+            elif hasattr(
+                engine,
+                "scan_symbol"
+            ):
+
+                result = engine.scan_symbol(
+                    symbol,
+                    symbol_history,
+                    LIVE_LTP.get(symbol)
+                )
+
+            elif hasattr(
+                engine,
+                "analyze"
+            ):
+
+                result = engine.analyze(
+                    symbol,
+                    symbol_history,
+                    LIVE_LTP.get(symbol)
+                )
+
+            if result is None:
+                continue
+
+            if not isinstance(
+                result,
+                dict
+            ):
+                continue
+
+            result.setdefault(
+                "symbol",
+                symbol
+            )
+
+            result.setdefault(
+                "ltp",
+                LIVE_LTP.get(symbol)
+            )
+
+            results.append(result)
 
         except Exception as exc:
 
             logger.debug(
-                "Strategy error | %s | %s",
+                "Scanner error %s: %s",
                 symbol,
-                exc,
+                exc
             )
 
-        if not isinstance(
-            result,
-            dict,
-        ):
-
-            result = {}
-
-        signal = (
-            result.get(
-                "signal"
-            )
-            or result.get(
-                "Signal"
-            )
-            or "WAIT"
-        )
-
-        score = result.get(
-            "score"
-        )
-
-        wave = (
-            result.get(
-                "wave"
-            )
-            or result.get(
-                "wave_signal"
-            )
-            or result.get(
-                "wave_direction"
-            )
-            or "WAIT"
-        )
-
-        tide = (
-            result.get(
-                "tide"
-            )
-            or result.get(
-                "tide_signal"
-            )
-            or result.get(
-                "tide_direction"
-            )
-            or "WAIT"
-        )
-
-        entry = result.get(
-            "entry"
-        )
-
-        stop_loss = (
-            result.get(
-                "stop_loss"
-            )
-            or result.get(
-                "sl"
-            )
-        )
-
-        target = result.get(
-            "target"
-        )
-
-        rr = result.get(
-            "rr"
-        )
-
-        confirmations = result.get(
-            "confirmations"
-        )
-
-        row = {
-
-            "symbol": symbol,
-
-            "name": meta.get(
-                "name",
-                symbol,
-            ),
-
-            "price": (
-                price
-                if price is not None
-                else result.get(
-                    "price"
-                )
-            ),
-
-            "ltp": (
-                price
-                if price is not None
-                else result.get(
-                    "ltp"
-                )
-            ),
-
-            "signal": signal,
-
-            "score": score,
-
-            "wave": wave,
-
-            "tide": tide,
-
-            "entry": entry,
-
-            "stop_loss": stop_loss,
-
-            "sl": stop_loss,
-
-            "target": target,
-
-            "rr": rr,
-
-            "confirmations": confirmations,
-
-            "volume": result.get(
-                "volume"
-            ),
-
-            "volume_sma": result.get(
-                "volume_sma"
-            ),
-
-            "rsi": result.get(
-                "rsi"
-            ),
-
-            "macd": result.get(
-                "macd"
-            ),
-
-            "macd_signal": result.get(
-                "macd_signal"
-            ),
-
-            "stochastic": result.get(
-                "stochastic"
-            ),
-
-            "support": result.get(
-                "support"
-            ),
-
-            "resistance": result.get(
-                "resistance"
-            ),
-
-            "lot_size": meta.get(
-                "lot_size"
-            ),
-
-            "exchange": "NSE",
-
-            "segment": "FNO",
-
-            "data_available": bool(
-                frames
-            ),
-
-            "status": (
-                "LIVE"
-                if price is not None
-                else "HISTORY"
-                if frames
-                else "NO DATA"
-            ),
-        }
-
-        rows.append(
-            row
-        )
-
-    # --------------------------------------------------------
-    # BUY -> SELL -> WAIT
-    # --------------------------------------------------------
-
-    priority = {
-        "BUY": 0,
-        "SELL": 1,
-        "WAIT": 2,
-    }
-
-    def sort_key(row):
+    # Sort:
+    # BUY first
+    # SELL second
+    # WAIT last
+    def sort_key(item):
 
         signal = str(
-            row.get(
+            item.get(
                 "signal",
-                "WAIT",
+                "WAIT"
             )
         ).upper()
 
-        score = safe_number(
-            row.get(
-                "score"
-            )
+        score = float(
+            item.get(
+                "score",
+                0
+            ) or 0
         )
 
-        if score is None:
-            score = 0
+        if signal == "BUY":
+            group = 0
+
+        elif signal == "SELL":
+            group = 1
+
+        else:
+            group = 2
 
         return (
-            priority.get(
-                signal,
-                3,
-            ),
-            -score,
-            row.get(
-                "symbol",
-                "",
-            ),
+            group,
+            -score
         )
 
-    rows.sort(
+    results.sort(
         key=sort_key
     )
 
-    return rows
+    return results
 
 
 # ============================================================
-# BACKGROUND SCANNER
+# BACKGROUND SCANNER WORKER
 # ============================================================
+
+SCANNER_RESULTS = []
+
+SCANNER_LOCK = threading.Lock()
+
 
 def scanner_worker():
 
-    logger.info(
-        "Scanner background worker started."
-    )
+    global SCANNER_RESULTS
 
     while True:
 
         try:
 
-            # ----------------------------------------------
-            # Live prices
-            # ----------------------------------------------
+            if STATE.get(
+                "authenticated"
+            ) and STATE.get(
+                "instruments_loaded"
+            ):
 
-            if FNO_STOCKS:
+                # Update LTP
+                try:
 
-                update_live_prices()
+                    update_live_prices()
 
-            # ----------------------------------------------
-            # History refresh
-            # ----------------------------------------------
+                except Exception as exc:
 
-            now = time.time()
+                    logger.warning(
+                        "Live price update failed: %s",
+                        exc
+                    )
 
-            needs_history = False
+                # Calculate scanner
+                try:
 
-            if not HISTORY_FETCH_TIME:
+                    results = calculate_scanner()
 
-                needs_history = True
+                    with SCANNER_LOCK:
 
-            else:
+                        SCANNER_RESULTS = results
 
-                oldest = min(
-                    HISTORY_FETCH_TIME.values()
-                )
+                except Exception as exc:
 
-                if (
-                    now - oldest
-                    >= HISTORY_REFRESH_SECONDS
-                ):
+                    logger.warning(
+                        "Scanner calculation failed: %s",
+                        exc
+                    )
 
-                    needs_history = True
-
-            if needs_history:
-
-                load_all_history(
-                    ENGINE.settings
-                )
-
-                sync_engine_history()
-
-            # ----------------------------------------------
-            # Status
-            # ----------------------------------------------
-
-            with STATE_LOCK:
-
-                if LIVE_LTP:
-
-                    STATE[
-                        "market_status"
-                    ] = "LIVE"
-
-                elif HISTORY:
-
-                    STATE[
-                        "market_status"
-                    ] = "HISTORY"
-
-                else:
-
-                    STATE[
-                        "market_status"
-                    ] = "WAITING"
+            time.sleep(10)
 
         except Exception as exc:
 
             logger.exception(
-                "Scanner worker error."
+                "Scanner worker error: %s",
+                exc
             )
 
-            with STATE_LOCK:
-
-                STATE[
-                    "last_error"
-                ] = str(exc)
-
-                STATE[
-                    "market_status"
-                ] = "ERROR"
-
-        time.sleep(
-            LTP_REFRESH_SECONDS
-        )
+            time.sleep(15)
 
 
 # ============================================================
-# INITIALIZE SCANNER
+# INITIALIZATION
 # ============================================================
 
-def initialize_scanner():
-
-    logger.info(
-        "=============================================="
-    )
-
-    logger.info(
-        "%s starting...",
-        APP_NAME,
-    )
-
-    logger.info(
-        "=============================================="
-    )
+def initialize_app():
 
     try:
 
-        # ----------------------------------------------------
-        # 1. Groww authentication
-        # ----------------------------------------------------
-
-        get_access_token()
-
-        # ----------------------------------------------------
-        # 2. Instrument CSV
-        # ----------------------------------------------------
-
-        df = load_instruments()
-
-        # ----------------------------------------------------
-        # 3. F&O universe
-        # ----------------------------------------------------
-
-        universe = (
-            build_fno_stock_universe(
-                df
-            )
+        logger.info(
+            "=================================================="
         )
-
-        cash_map = (
-            build_cash_symbol_map(
-                df,
-                universe,
-            )
-        )
-
-        FNO_STOCKS.clear()
-        FNO_STOCKS.update(
-            universe
-        )
-
-        CASH_SYMBOLS.clear()
-        CASH_SYMBOLS.update(
-            cash_map
-        )
-
-        with STATE_LOCK:
-
-            STATE[
-                "instruments_loaded"
-            ] = True
-
-            STATE[
-                "fno_stock_count"
-            ] = len(
-                FNO_STOCKS
-            )
-
-            STATE[
-                "fno_stocks"
-            ] = list(
-                FNO_STOCKS.keys()
-            )
-
-            STATE[
-                "market_status"
-            ] = "LOADING"
 
         logger.info(
-            "F&O universe ready: %s stocks.",
-            len(FNO_STOCKS),
+            "INDIAN F&O SCANNER STARTING"
         )
-
-        # ----------------------------------------------------
-        # 4. Initial history
-        # ----------------------------------------------------
-
-        load_all_history(
-            ENGINE.settings
-        )
-
-        sync_engine_history()
-
-        # ----------------------------------------------------
-        # 5. Initial live prices
-        # ----------------------------------------------------
-
-        update_live_prices()
-
-        # ----------------------------------------------------
-        # 6. Background worker
-        # ----------------------------------------------------
-
-        worker = threading.Thread(
-            target=scanner_worker,
-            daemon=True,
-            name="scanner-worker",
-        )
-
-        worker.start()
 
         logger.info(
-            "Scanner initialization complete."
+            "=================================================="
+        )
+
+        STATE["market_status"] = (
+            "AUTHENTICATING"
+        )
+
+        # ----------------------------------------------------
+        # 1. AUTHENTICATION
+        # ----------------------------------------------------
+
+        test_groww_connection()
+
+        STATE["market_status"] = (
+            "AUTHENTICATED"
+        )
+
+        # ----------------------------------------------------
+        # 2. INSTRUMENTS
+        # ----------------------------------------------------
+
+        load_instruments()
+
+        # ----------------------------------------------------
+        # 3. F&O UNIVERSE
+        # ----------------------------------------------------
+
+        build_fno_stock_universe()
+
+        build_cash_symbol_map()
+
+        # ----------------------------------------------------
+        # 4. HISTORICAL DATA
+        # ----------------------------------------------------
+
+        STATE["market_status"] = (
+            "LOADING_HISTORY"
+        )
+
+        load_all_history()
+
+        # ----------------------------------------------------
+        # 5. LTP
+        # ----------------------------------------------------
+
+        try:
+
+            update_live_prices()
+
+        except Exception as exc:
+
+            logger.warning(
+                "Initial LTP update failed: %s",
+                exc
+            )
+
+        STATE["market_status"] = (
+            "LIVE"
+        )
+
+        STATE["scanner_running"] = True
+
+        logger.info(
+            "Scanner initialization completed."
         )
 
     except Exception as exc:
 
-        logger.exception(
-            "Scanner initialization failed."
+        STATE["authenticated"] = False
+
+        STATE["market_status"] = "ERROR"
+
+        STATE["last_error"] = str(
+            exc
         )
 
-        with STATE_LOCK:
-
-            STATE[
-                "authenticated"
-            ] = False
-
-            STATE[
-                "market_status"
-            ] = "ERROR"
-
-            STATE[
-                "last_error"
-            ] = str(exc)
-
-
-# ============================================================
-# FASTAPI STARTUP
-# ============================================================
-
-@app.on_event("startup")
-def startup_event():
-
-    thread = threading.Thread(
-        target=initialize_scanner,
-        daemon=True,
-        name="scanner-initializer",
-    )
-
-    thread.start()
+        logger.exception(
+            "INITIALIZATION FAILED"
+        )
 
 
 # ============================================================
@@ -2233,7 +1453,10 @@ def health():
 
     return {
         "status": "ok",
-        "service": APP_NAME,
+        "app": STATE["app"],
+        "market_status": STATE[
+            "market_status"
+        ],
     }
 
 
@@ -2244,55 +1467,106 @@ def health():
 @app.get("/api/status")
 def api_status():
 
-    with STATE_LOCK:
+    return {
+        "app": STATE["app"],
+
+        "authenticated": STATE[
+            "authenticated"
+        ],
+
+        "instruments_loaded": STATE[
+            "instruments_loaded"
+        ],
+
+        "fno_stock_count": STATE[
+            "fno_stock_count"
+        ],
+
+        "history_loaded": STATE[
+            "history_loaded"
+        ],
+
+        "history_failed": STATE[
+            "history_failed"
+        ],
+
+        "last_history_update": STATE[
+            "last_history_update"
+        ],
+
+        "last_ltp_update": STATE[
+            "last_ltp_update"
+        ],
+
+        "market_status": STATE[
+            "market_status"
+        ],
+
+        "live_prices": STATE[
+            "live_prices"
+        ],
+
+        "last_error": STATE[
+            "last_error"
+        ],
+
+        "token_expiry": STATE[
+            "token_expiry"
+        ],
+
+        "session_name": STATE[
+            "session_name"
+        ],
+
+        "scanner_running": STATE[
+            "scanner_running"
+        ],
+    }
+
+
+# ============================================================
+# GROWw TEST
+# ============================================================
+
+@app.get("/api/groww-test")
+def groww_test():
+
+    try:
+
+        user_data = test_groww_connection()
 
         return {
-            "app": APP_NAME,
-
-            "authenticated": STATE[
-                "authenticated"
+            "status": "success",
+            "authenticated": True,
+            "token_received": True,
+            "session_name": STATE[
+                "session_name"
             ],
-
-            "instruments_loaded": STATE[
-                "instruments_loaded"
+            "expiry": STATE[
+                "token_expiry"
             ],
-
-            "fno_stock_count": STATE[
-                "fno_stock_count"
-            ],
-
-            "history_loaded": STATE[
-                "history_loaded"
-            ],
-
-            "history_failed": STATE[
-                "history_failed"
-            ],
-
-            "last_history_update": STATE[
-                "last_history_update"
-            ],
-
-            "last_ltp_update": STATE[
-                "last_ltp_update"
-            ],
-
-            "market_status": STATE[
-                "market_status"
-            ],
-
-            "live_prices": len(
-                LIVE_LTP
-            ),
-
-            "last_error": STATE[
-                "last_error"
-            ],
-
-            "settings": dict(
-                ENGINE.settings
-            ),
+            "user_detail": user_data,
         }
+
+    except Exception as exc:
+
+        STATE["authenticated"] = False
+
+        STATE["market_status"] = "ERROR"
+
+        STATE["last_error"] = str(
+            exc
+        )
+
+        return JSONResponse(
+            status_code=500,
+            content={
+                "status": "error",
+                "authenticated": False,
+                "token_received": False,
+                "message": str(exc),
+            }
+        )
 
 
 # ============================================================
@@ -2302,468 +1576,160 @@ def api_status():
 @app.get("/api/scanner")
 def api_scanner():
 
-    try:
+    with SCANNER_LOCK:
 
-        rows = calculate_scanner()
-
-        buy_count = sum(
-            1
-            for row in rows
-            if str(
-                row.get(
-                    "signal",
-                    "",
-                )
-            ).upper()
-            == "BUY"
+        results = list(
+            SCANNER_RESULTS
         )
 
-        sell_count = sum(
-            1
-            for row in rows
-            if str(
-                row.get(
-                    "signal",
-                    "",
-                )
-            ).upper()
-            == "SELL"
-        )
-
-        wait_count = (
-            len(rows)
-            - buy_count
-            - sell_count
-        )
-
-        return {
-            "status": "success",
-
-            "timestamp": (
-                datetime.utcnow()
-                .isoformat()
-            ),
-
-            "count": len(rows),
-
-            "summary": {
-                "total": len(rows),
-                "buy": buy_count,
-                "sell": sell_count,
-                "wait": wait_count,
-            },
-
-            "stocks": rows,
-
-            "data": rows,
-        }
-
-    except Exception as exc:
-
-        logger.exception(
-            "Scanner API error."
-        )
-
-        return JSONResponse(
-            status_code=500,
-            content={
-                "status": "error",
-                "message": str(exc),
-                "stocks": [],
-                "data": [],
-            },
-        )
+    return {
+        "status": "success",
+        "count": len(results),
+        "results": results,
+    }
 
 
 # ============================================================
-# GET SETTINGS
+# UNIVERSE API
+# ============================================================
+
+@app.get("/api/universe")
+def api_universe():
+
+    return {
+        "count": len(FNO_STOCKS),
+        "stocks": FNO_STOCKS,
+    }
+
+
+# ============================================================
+# SETTINGS GET
 # ============================================================
 
 @app.get("/api/settings")
 def get_settings():
 
     return {
-        "status": "success",
-        "settings": dict(
-            ENGINE.settings
-        ),
+        "settings": SETTINGS
     }
 
 
 # ============================================================
-# UPDATE SETTINGS
+# SETTINGS UPDATE
 # ============================================================
 
 @app.post("/api/settings")
-async def update_settings(
-    payload: Dict[str, Any],
+def update_settings(
+    payload: Dict[str, Any]
 ):
 
-    try:
+    global SETTINGS
 
-        incoming = payload.get(
-            "settings",
-            payload,
-        )
-
-        if not isinstance(
-            incoming,
-            dict,
-        ):
-
-            raise ValueError(
-                "Settings must be an object."
-            )
-
-        # ----------------------------------------------------
-        # Timeframes
-        # ----------------------------------------------------
-
-        if (
-            "entry_timeframe"
-            in incoming
-        ):
-
-            incoming[
-                "entry_timeframe"
-            ] = normalize_timeframe(
-                incoming[
-                    "entry_timeframe"
-                ],
-                "5m",
-            )
-
-        if (
-            "wave_timeframe"
-            in incoming
-        ):
-
-            incoming[
-                "wave_timeframe"
-            ] = normalize_timeframe(
-                incoming[
-                    "wave_timeframe"
-                ],
-                "15m",
-            )
-
-        if (
-            "tide_timeframe"
-            in incoming
-        ):
-
-            incoming[
-                "tide_timeframe"
-            ] = normalize_timeframe(
-                incoming[
-                    "tide_timeframe"
-                ],
-                "1h",
-            )
-
-        # ----------------------------------------------------
-        # Update strategy
-        # ----------------------------------------------------
-
-        if hasattr(
-            ENGINE,
-            "update_settings",
-        ):
-
-            ENGINE.update_settings(
-                incoming
-            )
-
-        elif hasattr(
-            ENGINE,
-            "set_settings",
-        ):
-
-            ENGINE.set_settings(
-                incoming
-            )
-
-        else:
-
-            ENGINE.settings.update(
-                incoming
-            )
-
-        logger.info(
-            "Strategy settings updated."
-        )
-
-        # ----------------------------------------------------
-        # Clear old history.
-        # Timeframe could have changed.
-        # ----------------------------------------------------
-
-        HISTORY.clear()
-
-        HISTORY_FETCH_TIME.clear()
-
-        with STATE_LOCK:
-
-            STATE[
-                "history_loaded"
-            ] = 0
-
-            STATE[
-                "history_failed"
-            ] = 0
-
-        # ----------------------------------------------------
-        # Reload history in background.
-        # ----------------------------------------------------
-
-        def reload_history():
-
-            try:
-
-                load_all_history(
-                    ENGINE.settings
-                )
-
-                sync_engine_history()
-
-            except Exception as exc:
-
-                logger.exception(
-                    "History reload failed."
-                )
-
-                with STATE_LOCK:
-
-                    STATE[
-                        "last_error"
-                    ] = str(exc)
-
-        threading.Thread(
-            target=reload_history,
-            daemon=True,
-        ).start()
-
-        return {
-            "status": "success",
-            "settings": dict(
-                ENGINE.settings
-            ),
-        }
-
-    except Exception as exc:
-
-        logger.exception(
-            "Settings update error."
-        )
+    if not isinstance(
+        payload,
+        dict
+    ):
 
         return JSONResponse(
             status_code=400,
             content={
-                "status": "error",
-                "message": str(exc),
-            },
+                "error": "Invalid settings."
+            }
         )
+
+    # Only known strategy settings
+    for key, value in payload.items():
+
+        if key in DEFAULT_SETTINGS:
+
+            SETTINGS[key] = value
+
+    logger.info(
+        "Settings updated: %s",
+        SETTINGS
+    )
+
+    return {
+        "status": "success",
+        "settings": SETTINGS,
+    }
 
 
 # ============================================================
-# RESET / REFRESH
+# RESET
 # ============================================================
 
 @app.post("/api/reset")
 def reset_scanner():
 
-    try:
+    global HISTORY
+    global LIVE_LTP
+    global SCANNER_RESULTS
 
-        HISTORY.clear()
+    HISTORY = {}
 
-        HISTORY_FETCH_TIME.clear()
+    LIVE_LTP = {}
 
-        with STATE_LOCK:
+    with SCANNER_LOCK:
 
-            STATE[
-                "history_loaded"
-            ] = 0
+        SCANNER_RESULTS = []
 
-            STATE[
-                "history_failed"
-            ] = 0
+    STATE["history_loaded"] = 0
+    STATE["history_failed"] = 0
+    STATE["live_prices"] = 0
 
-            STATE[
-                "last_error"
-            ] = None
+    STATE["last_history_update"] = None
+    STATE["last_ltp_update"] = None
 
-            STATE[
-                "market_status"
-            ] = "REFRESHING"
-
-        def reload():
-
-            try:
-
-                load_all_history(
-                    ENGINE.settings
-                )
-
-                sync_engine_history()
-
-                update_live_prices()
-
-            except Exception as exc:
-
-                logger.exception(
-                    "Reset reload failed."
-                )
-
-                with STATE_LOCK:
-
-                    STATE[
-                        "last_error"
-                    ] = str(exc)
-
-        threading.Thread(
-            target=reload,
-            daemon=True,
-        ).start()
-
-        return {
-            "status": "success",
-            "message": (
-                "Scanner refresh started."
-            ),
-        }
-
-    except Exception as exc:
-
-        return JSONResponse(
-            status_code=500,
-            content={
-                "status": "error",
-                "message": str(exc),
-            },
-        )
-
-
-# ============================================================
-# GROWW AUTH TEST
-# ============================================================
-
-@app.get("/api/groww-test")
-def groww_test():
-
-    try:
-
-        token = get_access_token()
-
-        return {
-            "status": "success",
-            "authenticated": bool(
-                token
-            ),
-            "message": (
-                "Groww authentication "
-                "is working."
-            ),
-        }
-
-    except Exception as exc:
-
-        return JSONResponse(
-            status_code=500,
-            content={
-                "status": "error",
-                "authenticated": False,
-                "message": str(exc),
-            },
-        )
-
-
-# ============================================================
-# F&O UNIVERSE API
-# ============================================================
-
-@app.get("/api/universe")
-def api_universe():
-
-    stocks = []
-
-    for symbol, meta in (
-        FNO_STOCKS.items()
-    ):
-
-        stocks.append(
-            {
-                "symbol": symbol,
-
-                "name": meta.get(
-                    "name",
-                    symbol,
-                ),
-
-                "exchange": "NSE",
-
-                "segment": "FNO",
-
-                "cash_groww_symbol": (
-                    CASH_SYMBOLS.get(
-                        symbol,
-                        f"NSE-{symbol}",
-                    )
-                ),
-
-                "lot_size": meta.get(
-                    "lot_size"
-                ),
-            }
-        )
-
-    stocks.sort(
-        key=lambda item:
-        item["symbol"]
+    STATE["market_status"] = (
+        "RESET"
     )
 
     return {
         "status": "success",
-        "count": len(stocks),
-        "stocks": stocks,
+        "message": "Scanner data reset."
     }
+
+
+# ============================================================
+# STARTUP
+# ============================================================
+
+@app.on_event("startup")
+def startup_event():
+
+    logger.info(
+        "FastAPI startup."
+    )
+
+    # Run initialization in background
+    thread = threading.Thread(
+        target=initialize_app,
+        daemon=True
+    )
+
+    thread.start()
+
+    # Scanner worker
+    scanner_thread = threading.Thread(
+        target=scanner_worker,
+        daemon=True
+    )
+
+    scanner_thread.start()
 
 
 # ============================================================
 # STATIC FRONTEND
 # ============================================================
 
-if os.path.isdir(
-    "static"
-):
+if os.path.isdir("static"):
 
     app.mount(
         "/",
         StaticFiles(
             directory="static",
-            html=True,
+            html=True
         ),
-        name="static",
-    )
-
-
-# ============================================================
-# DIRECT PYTHON START
-# ============================================================
-
-if __name__ == "__main__":
-
-    import uvicorn
-
-    port = int(
-        os.getenv(
-            "PORT",
-            "10000",
-        )
-    )
-
-    uvicorn.run(
-        "main:app",
-        host="0.0.0.0",
-        port=port,
-        reload=False,
+        name="static"
     )

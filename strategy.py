@@ -1,9 +1,20 @@
-import math
-import threading
-from datetime import datetime, timezone
+# ============================================================
+# INDIAN F&O SCANNER
+# STRATEGY ENGINE
+#
+# Wave  : 15m EMA 9/20/50 + indicators + Heikin Ashi
+# Tide  : 1h  EMA 9/20/50 + Heikin Ashi
+# Filter : EMA 20/50
+#
+# No automatic order placement.
+# ============================================================
 
-import pandas as pd
+from __future__ import annotations
+
+from typing import Any, Dict, Optional
+
 import numpy as np
+import pandas as pd
 
 
 # ============================================================
@@ -11,469 +22,209 @@ import numpy as np
 # ============================================================
 
 DEFAULT_SETTINGS = {
-    # Timeframes
-    "entry_timeframe": "5m",
+
+    # --------------------------------------------------------
+    # TWO TIMEFRAMES ONLY
+    # --------------------------------------------------------
+
     "wave_timeframe": "15m",
     "tide_timeframe": "1h",
 
-    # EMA
-    "ema_fast": 9,
-    "ema_mid": 20,
-    "ema_slow": 50,
+    # --------------------------------------------------------
+    # WAVE EMA
+    # --------------------------------------------------------
 
-    # Trend filter
-    "trend_fast": 20,
-    "trend_slow": 50,
+    "wave_ema_fast": 9,
+    "wave_ema_medium": 20,
+    "wave_ema_slow": 50,
 
+    # --------------------------------------------------------
+    # TIDE EMA
+    # --------------------------------------------------------
+
+    "tide_ema_fast": 9,
+    "tide_ema_medium": 20,
+    "tide_ema_slow": 50,
+
+    # --------------------------------------------------------
+    # FILTER EMA
+    # --------------------------------------------------------
+
+    "filter_ema_fast": 20,
+    "filter_ema_slow": 50,
+
+    # --------------------------------------------------------
+    # HEIKIN ASHI
+    # --------------------------------------------------------
+
+    "wave_heikin_ashi": True,
+    "tide_heikin_ashi": True,
+
+    # --------------------------------------------------------
     # RSI
-    "rsi_length": 14,
+    # --------------------------------------------------------
 
+    "rsi_period": 14,
+
+    # --------------------------------------------------------
     # MACD
+    # --------------------------------------------------------
+
     "macd_fast": 12,
     "macd_slow": 26,
     "macd_signal": 9,
 
-    # Stochastic
-    "stoch_length": 14,
-    "stoch_smooth": 3,
+    # --------------------------------------------------------
+    # STOCHASTIC
+    # --------------------------------------------------------
 
-    # Volume
+    "stochastic_period": 14,
+    "stochastic_smooth": 3,
+
+    # --------------------------------------------------------
+    # VOLUME
+    # --------------------------------------------------------
+
     "volume_sma": 20,
 
-    # Support / Resistance
+    # --------------------------------------------------------
+    # SUPPORT / RESISTANCE
+    # --------------------------------------------------------
+
     "sr_lookback": 160,
     "pivot": 3,
 
-    # Signal
-    "base_score": 50,
-    "buy_score": 70,
-    "sell_score": 30,
-    "minimum_confirmation": 7,
+    # --------------------------------------------------------
+    # SIGNAL CONFIRMATION
+    # --------------------------------------------------------
 
-    # Risk reward
+    "min_confirmation": 7,
+
+    # --------------------------------------------------------
+    # RISK / REWARD
+    # --------------------------------------------------------
+
     "risk_reward": 2.0,
 
-    # Minimum candles
+    # --------------------------------------------------------
+    # SCORE
+    # --------------------------------------------------------
+
+    "buy_score": 70,
+    "sell_score": 30,
+
+    # --------------------------------------------------------
+    # DATA
+    # --------------------------------------------------------
+
     "minimum_candles": 60,
 }
 
 
 # ============================================================
-# NUMERIC HELPERS
+# HELPER FUNCTIONS
 # ============================================================
 
 def safe_float(value, default=np.nan):
-
     try:
+        value = float(value)
 
-        if value is None:
-            return default
-
-        if isinstance(value, str):
-
-            value = value.strip()
-
-            if not value:
-                return default
-
-        result = float(value)
-
-        if math.isfinite(result):
-            return result
+        if np.isfinite(value):
+            return value
 
         return default
 
     except Exception:
-
         return default
 
 
-def clamp(value, low, high):
-
-    return max(
-        low,
-        min(high, value)
-    )
+def clamp(value, minimum, maximum):
+    return max(minimum, min(maximum, value))
 
 
 # ============================================================
-# TIMESTAMP PARSER
+# HEIKIN ASHI
 # ============================================================
 
-def parse_timestamp(value):
+def heikin_ashi(df: pd.DataFrame) -> pd.DataFrame:
 
-    """
-    Supports Groww candle timestamps such as:
+    if df is None or df.empty:
+        return pd.DataFrame()
 
-        2025-09-24T10:30:00
+    required = ["open", "high", "low", "close"]
 
-    and:
+    for column in required:
+        if column not in df.columns:
+            return pd.DataFrame()
 
-        2025-09-24T10:30:00+05:30
+    ha = pd.DataFrame(index=df.index)
 
-    and Unix timestamps in seconds/milliseconds.
-    """
+    ha["ha_close"] = (
+        df["open"]
+        + df["high"]
+        + df["low"]
+        + df["close"]
+    ) / 4.0
 
-    if value is None:
-        return None
+    ha_open = np.zeros(len(df))
 
-    # --------------------------------------------------------
-    # Numeric timestamp
-    # --------------------------------------------------------
+    for i in range(len(df)):
 
-    if isinstance(
-        value,
-        (int, float, np.integer, np.floating)
-    ):
+        if i == 0:
+            ha_open[i] = (
+                df["open"].iloc[i]
+                + df["close"].iloc[i]
+            ) / 2.0
 
-        try:
+        else:
+            ha_open[i] = (
+                ha_open[i - 1]
+                + ha["ha_close"].iloc[i - 1]
+            ) / 2.0
 
-            number = float(value)
+    ha["ha_open"] = ha_open
 
-            # Milliseconds
-            if number > 100000000000:
-
-                return datetime.fromtimestamp(
-                    number / 1000,
-                    tz=timezone.utc
-                )
-
-            # Seconds
-            return datetime.fromtimestamp(
-                number,
-                tz=timezone.utc
-            )
-
-        except Exception:
-
-            return None
-
-    # --------------------------------------------------------
-    # String timestamp
-    # --------------------------------------------------------
-
-    text = str(value).strip()
-
-    if not text:
-        return None
-
-    # Numeric string
-    try:
-
-        number = float(text)
-
-        if math.isfinite(number):
-
-            if number > 100000000000:
-
-                return datetime.fromtimestamp(
-                    number / 1000,
-                    tz=timezone.utc
-                )
-
-            if number > 1000000000:
-
-                return datetime.fromtimestamp(
-                    number,
-                    tz=timezone.utc
-                )
-
-    except Exception:
-        pass
-
-    # ISO timestamp
-    try:
-
-        normalized = text.replace(
-            "Z",
-            "+00:00"
-        )
-
-        dt = datetime.fromisoformat(
-            normalized
-        )
-
-        if dt.tzinfo is None:
-
-            # Groww/NSE timestamps without an
-            # offset are treated as IST.
-            from datetime import timedelta
-
-            ist = timezone(
-                timedelta(
-                    hours=5,
-                    minutes=30
-                )
-            )
-
-            dt = dt.replace(
-                tzinfo=ist
-            )
-
-        return dt
-
-    except Exception:
-        pass
-
-    # Pandas fallback
-    try:
-
-        dt = pd.to_datetime(
-            text,
-            errors="coerce"
-        )
-
-        if pd.isna(dt):
-            return None
-
-        if dt.tzinfo is None:
-
-            from datetime import timedelta
-
-            ist = timezone(
-                timedelta(
-                    hours=5,
-                    minutes=30
-                )
-            )
-
-            dt = dt.tz_localize(
-                ist
-            )
-
-        return dt.to_pydatetime()
-
-    except Exception:
-
-        return None
-
-
-# ============================================================
-# CANDLE NORMALIZATION
-# ============================================================
-
-def normalize_candles(candles):
-
-    """
-    Converts Groww candle response into:
-
-        timestamp
-        open
-        high
-        low
-        close
-        volume
-        open_interest
-
-    Supports:
-
+    ha["ha_high"] = pd.concat(
         [
-            timestamp,
-            open,
-            high,
-            low,
-            close,
-            volume,
-            open_interest
-        ]
+            df["high"],
+            ha["ha_open"],
+            ha["ha_close"],
+        ],
+        axis=1
+    ).max(axis=1)
 
-    and dictionary-style candles.
-    """
+    ha["ha_low"] = pd.concat(
+        [
+            df["low"],
+            ha["ha_open"],
+            ha["ha_close"],
+        ],
+        axis=1
+    ).min(axis=1)
 
-    if candles is None:
-        return pd.DataFrame()
-
-    if not isinstance(
-        candles,
-        list
-    ):
-        return pd.DataFrame()
-
-    rows = []
-
-    for row in candles:
-
-        try:
-
-            # ------------------------------------------------
-            # Dictionary format
-            # ------------------------------------------------
-
-            if isinstance(
-                row,
-                dict
-            ):
-
-                timestamp = (
-                    row.get("timestamp")
-                    or row.get("time")
-                    or row.get("datetime")
-                    or row.get("date")
-                )
-
-                open_price = (
-                    row.get("open")
-                    or row.get("open_price")
-                )
-
-                high_price = (
-                    row.get("high")
-                    or row.get("high_price")
-                )
-
-                low_price = (
-                    row.get("low")
-                    or row.get("low_price")
-                )
-
-                close_price = (
-                    row.get("close")
-                    or row.get("close_price")
-                )
-
-                volume = (
-                    row.get("volume")
-                    or 0
-                )
-
-                open_interest = (
-                    row.get("open_interest")
-                    or row.get("oi")
-                    or 0
-                )
-
-            # ------------------------------------------------
-            # List format
-            # ------------------------------------------------
-
-            elif isinstance(
-                row,
-                (list, tuple)
-            ):
-
-                if len(row) < 5:
-                    continue
-
-                timestamp = row[0]
-                open_price = row[1]
-                high_price = row[2]
-                low_price = row[3]
-                close_price = row[4]
-
-                volume = (
-                    row[5]
-                    if len(row) > 5
-                    else 0
-                )
-
-                open_interest = (
-                    row[6]
-                    if len(row) > 6
-                    else 0
-                )
-
-            else:
-
-                continue
-
-            timestamp = parse_timestamp(
-                timestamp
-            )
-
-            if timestamp is None:
-                continue
-
-            open_price = safe_float(
-                open_price
-            )
-
-            high_price = safe_float(
-                high_price
-            )
-
-            low_price = safe_float(
-                low_price
-            )
-
-            close_price = safe_float(
-                close_price
-            )
-
-            volume = safe_float(
-                volume,
-                0
-            )
-
-            open_interest = safe_float(
-                open_interest,
-                0
-            )
-
-            if any(
-                pd.isna(x)
-                for x in [
-                    open_price,
-                    high_price,
-                    low_price,
-                    close_price,
-                ]
-            ):
-                continue
-
-            rows.append({
-                "timestamp": timestamp,
-                "open": open_price,
-                "high": high_price,
-                "low": low_price,
-                "close": close_price,
-                "volume": volume,
-                "open_interest": open_interest,
-            })
-
-        except Exception:
-
-            continue
-
-    if not rows:
-        return pd.DataFrame()
-
-    df = pd.DataFrame(
-        rows
+    ha["ha_bullish"] = (
+        ha["ha_close"] > ha["ha_open"]
     )
 
-    # Remove duplicate timestamps.
-    df = df.drop_duplicates(
-        subset=["timestamp"],
-        keep="last"
+    ha["ha_bearish"] = (
+        ha["ha_close"] < ha["ha_open"]
     )
 
-    # Sort oldest → newest.
-    df = df.sort_values(
-        "timestamp"
-    )
-
-    df = df.reset_index(
-        drop=True
-    )
-
-    return df
+    return ha
 
 
 # ============================================================
 # EMA
 # ============================================================
 
-def ema(series, length):
-
-    length = max(
-        1,
-        int(length)
-    )
+def calculate_ema(
+    series: pd.Series,
+    period: int
+) -> pd.Series:
 
     return series.ewm(
-        span=length,
-        adjust=False,
-        min_periods=length
+        span=int(period),
+        adjust=False
     ).mean()
 
 
@@ -481,85 +232,76 @@ def ema(series, length):
 # RSI
 # ============================================================
 
-def rsi(series, length=14):
+def calculate_rsi(
+    close: pd.Series,
+    period: int = 14
+) -> pd.Series:
 
-    length = max(
-        1,
-        int(length)
-    )
+    delta = close.diff()
 
-    delta = series.diff()
+    gain = delta.clip(lower=0)
+    loss = -delta.clip(upper=0)
 
-    gain = delta.clip(
-        lower=0
-    )
-
-    loss = -delta.clip(
-        upper=0
-    )
-
-    avg_gain = gain.ewm(
-        alpha=1 / length,
-        adjust=False,
-        min_periods=length
+    average_gain = gain.ewm(
+        alpha=1 / period,
+        adjust=False
     ).mean()
 
-    avg_loss = loss.ewm(
-        alpha=1 / length,
-        adjust=False,
-        min_periods=length
+    average_loss = loss.ewm(
+        alpha=1 / period,
+        adjust=False
     ).mean()
 
-    rs = avg_gain / avg_loss.replace(
+    rs = average_gain / average_loss.replace(
         0,
         np.nan
     )
 
-    result = 100 - (
+    rsi = 100 - (
         100 / (1 + rs)
     )
 
-    return result.fillna(50)
+    return rsi.fillna(50)
 
 
 # ============================================================
 # MACD
 # ============================================================
 
-def macd(
-    series,
-    fast=12,
-    slow=26,
-    signal=9
+def calculate_macd(
+    close: pd.Series,
+    fast: int = 12,
+    slow: int = 26,
+    signal: int = 9
 ):
 
-    fast_ema = ema(
-        series,
+    ema_fast = calculate_ema(
+        close,
         fast
     )
 
-    slow_ema = ema(
-        series,
+    ema_slow = calculate_ema(
+        close,
         slow
     )
 
-    macd_line = (
-        fast_ema -
-        slow_ema
+    macd = (
+        ema_fast
+        - ema_slow
     )
 
-    signal_line = ema(
-        macd_line,
+    signal_line = calculate_ema(
+        macd,
         signal
     )
 
     histogram = (
-        macd_line -
-        signal_line
+        macd
+        - signal_line
     )
 
     return (
-        macd_line,
+        macd,
         signal_line,
         histogram
     )
@@ -569,284 +311,143 @@ def macd(
 # STOCHASTIC
 # ============================================================
 
-def stochastic(
-    df,
-    length=14,
-    smooth=3
+def calculate_stochastic(
+    df: pd.DataFrame,
+    period: int = 14,
+    smooth: int = 3
 ):
 
-    length = max(
-        1,
-        int(length)
+    lowest_low = (
+        df["low"]
+        .rolling(period)
+        .min()
     )
 
-    smooth = max(
-        1,
-        int(smooth)
+    highest_high = (
+        df["high"]
+        .rolling(period)
+        .max()
     )
-
-    lowest = df["low"].rolling(
-        length
-    ).min()
-
-    highest = df["high"].rolling(
-        length
-    ).max()
 
     denominator = (
-        highest -
-        lowest
-    )
+        highest_high
+        - lowest_low
+    ).replace(0, np.nan)
 
-    raw_k = (
+    k = (
         (
-            df["close"] -
-            lowest
+            df["close"]
+            - lowest_low
         )
-        /
-        denominator.replace(
-            0,
-            np.nan
-        )
-        * 100
+        / denominator
+    ) * 100
+
+    d = (
+        k.rolling(smooth)
+        .mean()
     )
 
-    k = raw_k.rolling(
-        smooth
-    ).mean()
-
-    d = k.rolling(
-        smooth
-    ).mean()
-
-    return (
-        k.fillna(50),
-        d.fillna(50)
-    )
+    return k.fillna(50), d.fillna(50)
 
 
 # ============================================================
-# SUPPORT / RESISTANCE
+# INDICATOR PREPARATION
 # ============================================================
 
-def support_resistance(
-    df,
-    lookback=160,
-    pivot=3
-):
+def prepare_dataframe(
+    df: pd.DataFrame,
+    settings: Dict[str, Any]
+) -> pd.DataFrame:
 
-    if df.empty:
-        return (
-            np.nan,
-            np.nan
-        )
+    if df is None or df.empty:
+        return pd.DataFrame()
 
-    lookback = max(
-        10,
-        int(lookback)
-    )
+    data = df.copy()
 
-    pivot = max(
-        1,
-        int(pivot)
-    )
-
-    recent = df.tail(
-        lookback
-    )
-
-    # --------------------------------------------------------
-    # Pivot-based levels
-    # --------------------------------------------------------
-
-    highs = recent["high"].values
-    lows = recent["low"].values
-
-    resistance_values = []
-    support_values = []
-
-    for i in range(
-        pivot,
-        len(recent) - pivot
-    ):
-
-        current_high = highs[i]
-
-        left_highs = highs[
-            i - pivot:i
-        ]
-
-        right_highs = highs[
-            i + 1:i + pivot + 1
-        ]
-
-        if (
-            current_high >=
-            np.max(left_highs)
-            and
-            current_high >=
-            np.max(right_highs)
-        ):
-
-            resistance_values.append(
-                current_high
-            )
-
-        current_low = lows[i]
-
-        left_lows = lows[
-            i - pivot:i
-        ]
-
-        right_lows = lows[
-            i + 1:i + pivot + 1
-        ]
-
-        if (
-            current_low <=
-            np.min(left_lows)
-            and
-            current_low <=
-            np.min(right_lows)
-        ):
-
-            support_values.append(
-                current_low
-            )
-
-    price = float(
-        recent["close"].iloc[-1]
-    )
-
-    # --------------------------------------------------------
-    # Select nearest levels
-    # --------------------------------------------------------
-
-    supports = [
-        x
-        for x in support_values
-        if x < price
+    data.columns = [
+        str(column).lower()
+        for column in data.columns
     ]
 
-    resistances = [
-        x
-        for x in resistance_values
-        if x > price
+    required = [
+        "open",
+        "high",
+        "low",
+        "close",
+        "volume",
     ]
 
-    # Fallback to rolling levels.
-    if supports:
+    for column in required:
 
-        support = max(
-            supports
+        if column not in data.columns:
+
+            if column == "volume":
+
+                data["volume"] = 0
+
+            else:
+
+                return pd.DataFrame()
+
+    for column in required:
+
+        data[column] = pd.to_numeric(
+            data[column],
+            errors="coerce"
         )
 
-    else:
-
-        support = float(
-            recent["low"].min()
-        )
-
-    if resistances:
-
-        resistance = min(
-            resistances
-        )
-
-    else:
-
-        resistance = float(
-            recent["high"].max()
-        )
-
-    return (
-        support,
-        resistance
+    data = data.dropna(
+        subset=[
+            "open",
+            "high",
+            "low",
+            "close"
+        ]
     )
 
-
-# ============================================================
-# INDICATOR CALCULATION
-# ============================================================
-
-def calculate_indicators(
-    candles,
-    settings
-):
-
-    df = normalize_candles(
-        candles
-    )
-
-    if df.empty:
-        return df
-
-    minimum = int(
-        settings.get(
-            "minimum_candles",
-            60
-        )
-    )
-
-    # We can calculate with fewer candles,
-    # but signal quality improves with enough history.
-    if len(df) < max(
-        20,
-        minimum
-    ):
-
-        # Continue calculation anyway.
-        pass
+    if data.empty:
+        return pd.DataFrame()
 
     # --------------------------------------------------------
-    # EMA
+    # WAVE / GENERAL EMA
     # --------------------------------------------------------
 
-    df["ema_fast"] = ema(
-        df["close"],
-        settings[
-            "ema_fast"
-        ]
+    data["ema_9"] = calculate_ema(
+        data["close"],
+        settings["wave_ema_fast"]
     )
 
-    df["ema_mid"] = ema(
-        df["close"],
-        settings[
-            "ema_mid"
-        ]
+    data["ema_20"] = calculate_ema(
+        data["close"],
+        settings["wave_ema_medium"]
     )
 
-    df["ema_slow"] = ema(
-        df["close"],
-        settings[
-            "ema_slow"
-        ]
+    data["ema_50"] = calculate_ema(
+        data["close"],
+        settings["wave_ema_slow"]
     )
 
-    # Trend filter
-    df["trend_fast"] = ema(
-        df["close"],
-        settings[
-            "trend_fast"
-        ]
+    # --------------------------------------------------------
+    # FILTER EMA
+    # --------------------------------------------------------
+
+    data["filter_ema_fast"] = calculate_ema(
+        data["close"],
+        settings["filter_ema_fast"]
     )
 
-    df["trend_slow"] = ema(
-        df["close"],
-        settings[
-            "trend_slow"
-        ]
+    data["filter_ema_slow"] = calculate_ema(
+        data["close"],
+        settings["filter_ema_slow"]
     )
 
     # --------------------------------------------------------
     # RSI
     # --------------------------------------------------------
 
-    df["rsi"] = rsi(
-        df["close"],
-        settings[
-            "rsi_length"
-        ]
+    data["rsi"] = calculate_rsi(
+        data["close"],
+        settings["rsi_period"]
     )
 
     # --------------------------------------------------------
@@ -854,20 +455,14 @@ def calculate_indicators(
     # --------------------------------------------------------
 
     (
-        df["macd"],
-        df["macd_signal"],
-        df["macd_hist"]
-    ) = macd(
-        df["close"],
-        settings[
-            "macd_fast"
-        ],
-        settings[
-            "macd_slow"
-        ],
-        settings[
-            "macd_signal"
-        ]
+        data["macd"],
+        data["macd_signal"],
+        data["macd_hist"]
+    ) = calculate_macd(
+        data["close"],
+        settings["macd_fast"],
+        settings["macd_slow"],
+        settings["macd_signal"]
     )
 
     # --------------------------------------------------------
@@ -875,121 +470,690 @@ def calculate_indicators(
     # --------------------------------------------------------
 
     (
-        df["stoch_k"],
-        df["stoch_d"]
-    ) = stochastic(
-        df,
-        settings[
-            "stoch_length"
-        ],
-        settings[
-            "stoch_smooth"
-        ]
+        data["stoch_k"],
+        data["stoch_d"]
+    ) = calculate_stochastic(
+        data,
+        settings["stochastic_period"],
+        settings["stochastic_smooth"]
     )
 
     # --------------------------------------------------------
     # VOLUME SMA
     # --------------------------------------------------------
 
-    volume_period = max(
-        1,
-        int(
-            settings[
-                "volume_sma"
-            ]
-        )
-    )
-
-    df["volume_sma"] = (
-        df["volume"]
+    data["volume_sma"] = (
+        data["volume"]
         .rolling(
-            volume_period
+            settings["volume_sma"]
         )
         .mean()
     )
 
     # --------------------------------------------------------
+    # HEIKIN ASHI
+    # --------------------------------------------------------
+
+    ha = heikin_ashi(data)
+
+    if not ha.empty:
+
+        for column in ha.columns:
+
+            data[column] = ha[column]
+
+    # --------------------------------------------------------
     # SUPPORT / RESISTANCE
     # --------------------------------------------------------
 
-    support, resistance = (
-        support_resistance(
-            df,
-            settings[
-                "sr_lookback"
-            ],
-            settings[
-                "pivot"
-            ]
+    lookback = int(
+        settings["sr_lookback"]
+    )
+
+    data["support"] = (
+        data["low"]
+        .rolling(lookback)
+        .min()
+    )
+
+    data["resistance"] = (
+        data["high"]
+        .rolling(lookback)
+        .max()
+    )
+
+    # --------------------------------------------------------
+    # PIVOT
+    # --------------------------------------------------------
+
+    pivot_period = int(
+        settings["pivot"]
+    )
+
+    data["pivot_high"] = (
+        data["high"]
+        == data["high"]
+        .rolling(
+            pivot_period * 2 + 1,
+            center=True
+        )
+        .max()
+    )
+
+    data["pivot_low"] = (
+        data["low"]
+        == data["low"]
+        .rolling(
+            pivot_period * 2 + 1,
+            center=True
+        )
+        .min()
+    )
+
+    return data
+
+
+# ============================================================
+# WAVE ANALYSIS
+# ============================================================
+
+def analyze_wave(
+    df: pd.DataFrame,
+    settings: Dict[str, Any]
+) -> Dict[str, Any]:
+
+    if df is None or len(df) < 5:
+        return {
+            "direction": "WAIT",
+            "score": 0,
+            "confirmation": 0,
+        }
+
+    data = prepare_dataframe(
+        df,
+        settings
+    )
+
+    if data.empty:
+        return {
+            "direction": "WAIT",
+            "score": 0,
+            "confirmation": 0,
+        }
+
+    last = data.iloc[-1]
+
+    close = safe_float(
+        last["close"]
+    )
+
+    ema_fast = safe_float(
+        last["ema_9"]
+    )
+
+    ema_medium = safe_float(
+        last["ema_20"]
+    )
+
+    ema_slow = safe_float(
+        last["ema_50"]
+    )
+
+    rsi = safe_float(
+        last["rsi"],
+        50
+    )
+
+    macd = safe_float(
+        last["macd"]
+    )
+
+    macd_signal = safe_float(
+        last["macd_signal"]
+    )
+
+    macd_hist = safe_float(
+        last["macd_hist"]
+    )
+
+    stoch_k = safe_float(
+        last["stoch_k"],
+        50
+    )
+
+    stoch_d = safe_float(
+        last["stoch_d"],
+        50
+    )
+
+    volume = safe_float(
+        last["volume"],
+        0
+    )
+
+    volume_sma = safe_float(
+        last["volume_sma"],
+        0
+    )
+
+    # --------------------------------------------------------
+    # BUY / SELL CONFIRMATIONS
+    # --------------------------------------------------------
+
+    buy = 0
+    sell = 0
+
+    # EMA structure
+    if (
+        close > ema_fast
+        and ema_fast > ema_medium
+        and ema_medium > ema_slow
+    ):
+        buy += 1
+
+    if (
+        close < ema_fast
+        and ema_fast < ema_medium
+        and ema_medium < ema_slow
+    ):
+        sell += 1
+
+    # Price vs EMA
+    if close > ema_medium:
+        buy += 1
+
+    if close < ema_medium:
+        sell += 1
+
+    # RSI
+    if rsi >= 50:
+        buy += 1
+
+    if rsi < 50:
+        sell += 1
+
+    # MACD
+    if (
+        macd > macd_signal
+        and macd_hist >= 0
+    ):
+        buy += 1
+
+    if (
+        macd < macd_signal
+        and macd_hist <= 0
+    ):
+        sell += 1
+
+    # Stochastic
+    if stoch_k > stoch_d:
+        buy += 1
+
+    if stoch_k < stoch_d:
+        sell += 1
+
+    # Volume
+    if (
+        volume_sma > 0
+        and volume >= volume_sma
+    ):
+
+        if close > ema_medium:
+            buy += 1
+
+        elif close < ema_medium:
+            sell += 1
+
+    # Heikin Ashi
+    ha_bullish = bool(
+        last.get(
+            "ha_bullish",
+            False
         )
     )
 
-    df["support"] = support
-    df["resistance"] = resistance
+    ha_bearish = bool(
+        last.get(
+            "ha_bearish",
+            False
+        )
+    )
 
-    return df
+    if settings.get(
+        "wave_heikin_ashi",
+        True
+    ):
+
+        if ha_bullish:
+            buy += 1
+
+        if ha_bearish:
+            sell += 1
+
+    # --------------------------------------------------------
+    # DIRECTION
+    # --------------------------------------------------------
+
+    if buy > sell:
+        direction = "BUY"
+
+    elif sell > buy:
+        direction = "SELL"
+
+    else:
+        direction = "WAIT"
+
+    return {
+        "direction": direction,
+        "buy_confirmation": buy,
+        "sell_confirmation": sell,
+        "confirmation": max(
+            buy,
+            sell
+        ),
+
+        "ema_fast": ema_fast,
+        "ema_medium": ema_medium,
+        "ema_slow": ema_slow,
+
+        "rsi": rsi,
+
+        "macd": macd,
+        "macd_signal": macd_signal,
+        "macd_hist": macd_hist,
+
+        "stoch_k": stoch_k,
+        "stoch_d": stoch_d,
+
+        "volume": volume,
+        "volume_sma": volume_sma,
+
+        "ha_bullish": ha_bullish,
+        "ha_bearish": ha_bearish,
+
+        "score_buy": buy,
+        "score_sell": sell,
+    }
 
 
 # ============================================================
-# TIMEFRAME TREND
+# TIDE ANALYSIS
 # ============================================================
 
-def timeframe_direction(
-    df,
-    settings
-):
+def analyze_tide(
+    df: pd.DataFrame,
+    settings: Dict[str, Any]
+) -> Dict[str, Any]:
 
-    if df is None:
-        return "WAIT"
+    if df is None or len(df) < 5:
+        return {
+            "direction": "WAIT",
+            "confirmation": 0,
+        }
 
-    if df.empty:
-        return "WAIT"
+    data = prepare_dataframe(
+        df,
+        settings
+    )
 
-    row = df.iloc[-1]
+    if data.empty:
+        return {
+            "direction": "WAIT",
+            "confirmation": 0,
+        }
+
+    last = data.iloc[-1]
 
     close = safe_float(
-        row.get("close")
+        last["close"]
     )
 
-    fast = safe_float(
-        row.get("ema_fast")
+    ema_fast = safe_float(
+        last["ema_9"]
     )
 
-    mid = safe_float(
-        row.get("ema_mid")
+    ema_medium = safe_float(
+        last["ema_20"]
     )
 
-    slow = safe_float(
-        row.get("ema_slow")
+    ema_slow = safe_float(
+        last["ema_50"]
     )
 
-    if any(
-        pd.isna(x)
-        for x in [
-            close,
-            fast,
-            mid,
-            slow,
-        ]
+    buy = 0
+    sell = 0
+
+    # 3 EMA structure
+    if (
+        close > ema_fast
+        and ema_fast > ema_medium
+        and ema_medium > ema_slow
     ):
-        return "WAIT"
+        buy += 2
 
     if (
-        close > fast
+        close < ema_fast
+        and ema_fast < ema_medium
+        and ema_medium < ema_slow
+    ):
+        sell += 2
+
+    # Price position
+    if close > ema_medium:
+        buy += 1
+
+    if close < ema_medium:
+        sell += 1
+
+    # Heikin Ashi
+    ha_bullish = bool(
+        last.get(
+            "ha_bullish",
+            False
+        )
+    )
+
+    ha_bearish = bool(
+        last.get(
+            "ha_bearish",
+            False
+        )
+    )
+
+    if settings.get(
+        "tide_heikin_ashi",
+        True
+    ):
+
+        if ha_bullish:
+            buy += 1
+
+        if ha_bearish:
+            sell += 1
+
+    if buy > sell:
+        direction = "BUY"
+
+    elif sell > buy:
+        direction = "SELL"
+
+    else:
+        direction = "WAIT"
+
+    return {
+        "direction": direction,
+
+        "buy_confirmation": buy,
+        "sell_confirmation": sell,
+
+        "confirmation": max(
+            buy,
+            sell
+        ),
+
+        "ema_fast": ema_fast,
+        "ema_medium": ema_medium,
+        "ema_slow": ema_slow,
+
+        "ha_bullish": ha_bullish,
+        "ha_bearish": ha_bearish,
+
+        "score_buy": buy,
+        "score_sell": sell,
+    }
+
+
+# ============================================================
+# FILTER ANALYSIS
+# ============================================================
+
+def analyze_filter(
+    df: pd.DataFrame,
+    settings: Dict[str, Any]
+) -> Dict[str, Any]:
+
+    if df is None or df.empty:
+        return {
+            "direction": "WAIT"
+        }
+
+    data = df.copy()
+
+    data.columns = [
+        str(column).lower()
+        for column in data.columns
+    ]
+
+    if "close" not in data.columns:
+        return {
+            "direction": "WAIT"
+        }
+
+    data["close"] = pd.to_numeric(
+        data["close"],
+        errors="coerce"
+    )
+
+    data = data.dropna(
+        subset=["close"]
+    )
+
+    if data.empty:
+        return {
+            "direction": "WAIT"
+        }
+
+    fast = calculate_ema(
+        data["close"],
+        settings["filter_ema_fast"]
+    )
+
+    slow = calculate_ema(
+        data["close"],
+        settings["filter_ema_slow"]
+    )
+
+    close = safe_float(
+        data["close"].iloc[-1]
+    )
+
+    fast_value = safe_float(
+        fast.iloc[-1]
+    )
+
+    slow_value = safe_float(
+        slow.iloc[-1]
+    )
+
+    if (
+        close > fast_value
+        and fast_value > slow_value
+    ):
+
+        direction = "BUY"
+
+    elif (
+        close < fast_value
+        and fast_value < slow_value
+    ):
+
+        direction = "SELL"
+
+    else:
+
+        direction = "WAIT"
+
+    return {
+        "direction": direction,
+        "ema_fast": fast_value,
+        "ema_slow": slow_value,
+    }
+
+
+# ============================================================
+# SCORE CALCULATION
+# ============================================================
+
+def calculate_score(
+    wave: Dict[str, Any],
+    tide: Dict[str, Any],
+    filter_data: Dict[str, Any],
+    settings: Dict[str, Any]
+):
+
+    buy_score = 50
+    sell_score = 50
+
+    # --------------------------------------------------------
+    # WAVE
+    # --------------------------------------------------------
+
+    if wave["direction"] == "BUY":
+        buy_score += 15
+
+    elif wave["direction"] == "SELL":
+        sell_score -= 15
+
+    if wave["direction"] == "SELL":
+        sell_score += 15
+
+    elif wave["direction"] == "BUY":
+        buy_score += 0
+
+    # --------------------------------------------------------
+    # TIDE
+    # --------------------------------------------------------
+
+    if tide["direction"] == "BUY":
+        buy_score += 15
+
+    elif tide["direction"] == "SELL":
+        sell_score += 15
+
+    # --------------------------------------------------------
+    # FILTER
+    # --------------------------------------------------------
+
+    if filter_data["direction"] == "BUY":
+        buy_score += 10
+
+    elif filter_data["direction"] == "SELL":
+        sell_score += 10
+
+    # --------------------------------------------------------
+    # CLAMP
+    # --------------------------------------------------------
+
+    buy_score = int(
+        clamp(
+            buy_score,
+            0,
+            100
+        )
+    )
+
+    sell_score = int(
+        clamp(
+            sell_score,
+            0,
+            100
+        )
+    )
+
+    return (
+        buy_score,
+        sell_score
+    )
+
+
+# ============================================================
+# FINAL SIGNAL
+# ============================================================
+
+def final_signal(
+    wave: Dict[str, Any],
+    tide: Dict[str, Any],
+    filter_data: Dict[str, Any],
+    settings: Dict[str, Any],
+    buy_score: int,
+    sell_score: int
+):
+
+    min_confirmation = int(
+        settings["min_confirmation"]
+    )
+
+    buy_confirmations = (
+        wave.get(
+            "buy_confirmation",
+            0
+        )
+        +
+        tide.get(
+            "buy_confirmation",
+            0
+        )
+    )
+
+    sell_confirmations = (
+        wave.get(
+            "sell_confirmation",
+            0
+        )
+        +
+        tide.get(
+            "sell_confirmation",
+            0
+        )
+    )
+
+    # --------------------------------------------------------
+    # BUY
+    # --------------------------------------------------------
+
+    if (
+        buy_score >=
+        int(settings["buy_score"])
+
         and
-        fast > mid
+        wave["direction"] == "BUY"
+
         and
-        mid > slow
+        tide["direction"] == "BUY"
+
+        and
+        filter_data["direction"] == "BUY"
+
+        and
+        buy_confirmations >=
+        min_confirmation
     ):
 
         return "BUY"
 
+    # --------------------------------------------------------
+    # SELL
+    # --------------------------------------------------------
+
     if (
-        close < fast
+        sell_score >=
+        int(
+            100 -
+            settings["sell_score"]
+        )
+
         and
-        fast < mid
+        wave["direction"] == "SELL"
+
         and
-        mid < slow
+        tide["direction"] == "SELL"
+
+        and
+        filter_data["direction"] == "SELL"
+
+        and
+        sell_confirmations >=
+        min_confirmation
     ):
 
         return "SELL"
@@ -998,588 +1162,85 @@ def timeframe_direction(
 
 
 # ============================================================
-# SCORE ENGINE
-# ============================================================
-
-def score_entry(
-    entry_df,
-    wave_direction,
-    tide_direction,
-    settings
-):
-
-    if (
-        entry_df is None
-        or entry_df.empty
-    ):
-
-        return {
-            "signal": "WAIT",
-            "score": 50,
-            "confirmation": 0,
-            "reasons": [],
-        }
-
-    row = entry_df.iloc[-1]
-
-    close = safe_float(
-        row.get("close")
-    )
-
-    ema_fast_value = safe_float(
-        row.get("ema_fast")
-    )
-
-    ema_mid_value = safe_float(
-        row.get("ema_mid")
-    )
-
-    ema_slow_value = safe_float(
-        row.get("ema_slow")
-    )
-
-    trend_fast_value = safe_float(
-        row.get("trend_fast")
-    )
-
-    trend_slow_value = safe_float(
-        row.get("trend_slow")
-    )
-
-    rsi_value = safe_float(
-        row.get("rsi"),
-        50
-    )
-
-    macd_value = safe_float(
-        row.get("macd"),
-        0
-    )
-
-    macd_signal_value = safe_float(
-        row.get("macd_signal"),
-        0
-    )
-
-    macd_hist_value = safe_float(
-        row.get("macd_hist"),
-        0
-    )
-
-    stoch_k = safe_float(
-        row.get("stoch_k"),
-        50
-    )
-
-    stoch_d = safe_float(
-        row.get("stoch_d"),
-        50
-    )
-
-    volume_value = safe_float(
-        row.get("volume"),
-        0
-    )
-
-    volume_sma = safe_float(
-        row.get("volume_sma"),
-        0
-    )
-
-    support = safe_float(
-        row.get("support")
-    )
-
-    resistance = safe_float(
-        row.get("resistance")
-    )
-
-    score = int(
-        settings.get(
-            "base_score",
-            50
-        )
-    )
-
-    buy_confirmations = 0
-    sell_confirmations = 0
-
-    buy_reasons = []
-    sell_reasons = []
-
-    # --------------------------------------------------------
-    # EMA alignment
-    # --------------------------------------------------------
-
-    if (
-        close > ema_fast_value
-        and
-        ema_fast_value > ema_mid_value
-        and
-        ema_mid_value > ema_slow_value
-    ):
-
-        score += 8
-        buy_confirmations += 1
-
-        buy_reasons.append(
-            "EMA bullish alignment"
-        )
-
-    elif (
-        close < ema_fast_value
-        and
-        ema_fast_value < ema_mid_value
-        and
-        ema_mid_value < ema_slow_value
-    ):
-
-        score -= 8
-        sell_confirmations += 1
-
-        sell_reasons.append(
-            "EMA bearish alignment"
-        )
-
-    # --------------------------------------------------------
-    # 20/50 trend filter
-    # --------------------------------------------------------
-
-    if (
-        close > trend_fast_value
-        and
-        trend_fast_value > trend_slow_value
-    ):
-
-        score += 7
-        buy_confirmations += 1
-
-        buy_reasons.append(
-            "20/50 bullish trend"
-        )
-
-    elif (
-        close < trend_fast_value
-        and
-        trend_fast_value < trend_slow_value
-    ):
-
-        score -= 7
-        sell_confirmations += 1
-
-        sell_reasons.append(
-            "20/50 bearish trend"
-        )
-
-    # --------------------------------------------------------
-    # RSI
-    # --------------------------------------------------------
-
-    if rsi_value >= 55:
-
-        score += 5
-        buy_confirmations += 1
-
-        buy_reasons.append(
-            "RSI bullish"
-        )
-
-    elif rsi_value <= 45:
-
-        score -= 5
-        sell_confirmations += 1
-
-        sell_reasons.append(
-            "RSI bearish"
-        )
-
-    # --------------------------------------------------------
-    # MACD
-    # --------------------------------------------------------
-
-    if (
-        macd_value > macd_signal_value
-        and
-        macd_hist_value > 0
-    ):
-
-        score += 6
-        buy_confirmations += 1
-
-        buy_reasons.append(
-            "MACD bullish"
-        )
-
-    elif (
-        macd_value < macd_signal_value
-        and
-        macd_hist_value < 0
-    ):
-
-        score -= 6
-        sell_confirmations += 1
-
-        sell_reasons.append(
-            "MACD bearish"
-        )
-
-    # --------------------------------------------------------
-    # Stochastic
-    # --------------------------------------------------------
-
-    if (
-        stoch_k > stoch_d
-        and
-        stoch_k >= 50
-    ):
-
-        score += 4
-        buy_confirmations += 1
-
-        buy_reasons.append(
-            "Stochastic bullish"
-        )
-
-    elif (
-        stoch_k < stoch_d
-        and
-        stoch_k <= 50
-    ):
-
-        score -= 4
-        sell_confirmations += 1
-
-        sell_reasons.append(
-            "Stochastic bearish"
-        )
-
-    # --------------------------------------------------------
-    # Volume
-    # --------------------------------------------------------
-
-    if (
-        volume_sma > 0
-        and
-        volume_value > volume_sma
-    ):
-
-        if close > ema_mid_value:
-
-            score += 5
-            buy_confirmations += 1
-
-            buy_reasons.append(
-                "Volume above average"
-            )
-
-        elif close < ema_mid_value:
-
-            score -= 5
-            sell_confirmations += 1
-
-            sell_reasons.append(
-                "Volume above average"
-            )
-
-    # --------------------------------------------------------
-    # Wave
-    # --------------------------------------------------------
-
-    if wave_direction == "BUY":
-
-        score += 6
-        buy_confirmations += 1
-
-        buy_reasons.append(
-            "Wave BUY"
-        )
-
-    elif wave_direction == "SELL":
-
-        score -= 6
-        sell_confirmations += 1
-
-        sell_reasons.append(
-            "Wave SELL"
-        )
-
-    # --------------------------------------------------------
-    # Tide
-    # --------------------------------------------------------
-
-    if tide_direction == "BUY":
-
-        score += 6
-        buy_confirmations += 1
-
-        buy_reasons.append(
-            "Tide BUY"
-        )
-
-    elif tide_direction == "SELL":
-
-        score -= 6
-        sell_confirmations += 1
-
-        sell_reasons.append(
-            "Tide SELL"
-        )
-
-    # --------------------------------------------------------
-    # Support / Resistance
-    # --------------------------------------------------------
-
-    if not pd.isna(
-        support
-    ):
-
-        distance_support = (
-            close - support
-        ) / close * 100
-
-        if (
-            0 <= distance_support <= 2
-        ):
-
-            score += 3
-            buy_confirmations += 1
-
-            buy_reasons.append(
-                "Near support"
-            )
-
-    if not pd.isna(
-        resistance
-    ):
-
-        distance_resistance = (
-            resistance - close
-        ) / close * 100
-
-        if (
-            0 <= distance_resistance <= 2
-        ):
-
-            score -= 3
-            sell_confirmations += 1
-
-            sell_reasons.append(
-                "Near resistance"
-            )
-
-    score = int(
-        clamp(
-            score,
-            0,
-            100
-        )
-    )
-
-    # --------------------------------------------------------
-    # Final signal
-    # --------------------------------------------------------
-
-    buy_threshold = int(
-        settings.get(
-            "buy_score",
-            70
-        )
-    )
-
-    sell_threshold = int(
-        settings.get(
-            "sell_score",
-            30
-        )
-    )
-
-    minimum_confirmation = int(
-        settings.get(
-            "minimum_confirmation",
-            7
-        )
-    )
-
-    signal = "WAIT"
-
-    reasons = []
-
-    if (
-        score >= buy_threshold
-        and
-        wave_direction == "BUY"
-        and
-        tide_direction == "BUY"
-        and
-        buy_confirmations >=
-        minimum_confirmation
-    ):
-
-        signal = "BUY"
-
-        reasons = buy_reasons
-
-    elif (
-        score <= sell_threshold
-        and
-        wave_direction == "SELL"
-        and
-        tide_direction == "SELL"
-        and
-        sell_confirmations >=
-        minimum_confirmation
-    ):
-
-        signal = "SELL"
-
-        reasons = sell_reasons
-
-    else:
-
-        if score >= 50:
-
-            reasons = buy_reasons
-
-        else:
-
-            reasons = sell_reasons
-
-    return {
-        "signal": signal,
-        "score": score,
-        "confirmation": max(
-            buy_confirmations,
-            sell_confirmations
-        ),
-        "buy_confirmation": buy_confirmations,
-        "sell_confirmation": sell_confirmations,
-        "reasons": reasons,
-    }
-
-
-# ============================================================
 # RISK / REWARD
 # ============================================================
 
-def calculate_risk_reward(
-    entry,
-    signal,
-    support,
-    resistance,
-    settings
+def calculate_levels(
+    price: float,
+    signal: str,
+    support: float,
+    resistance: float,
+    settings: Dict[str, Any]
 ):
 
-    entry = safe_float(
-        entry
+    price = safe_float(
+        price,
+        np.nan
     )
 
-    support = safe_float(
-        support
-    )
-
-    resistance = safe_float(
-        resistance
-    )
-
-    rr = safe_float(
-        settings.get(
-            "risk_reward",
-            2.0
-        ),
-        2.0
-    )
-
-    if pd.isna(entry):
+    if not np.isfinite(price):
         return {
-            "stop_loss": None,
-            "target": None,
-            "risk": None,
+            "sl": np.nan,
+            "target": np.nan,
+            "rr": settings["risk_reward"]
         }
 
-    # --------------------------------------------------------
-    # BUY
-    # --------------------------------------------------------
+    rr = float(
+        settings["risk_reward"]
+    )
 
     if signal == "BUY":
 
+        sl = support
+
         if (
-            not pd.isna(support)
-            and
-            support < entry
+            not np.isfinite(sl)
+            or sl >= price
         ):
 
-            stop = support
+            sl = price * 0.99
 
-        else:
-
-            # fallback: 1% risk
-            stop = entry * 0.99
-
-        risk = entry - stop
-
-        if risk <= 0:
-
-            return {
-                "stop_loss": None,
-                "target": None,
-                "risk": None,
-            }
+        risk = price - sl
 
         target = (
-            entry +
-            risk * rr
+            price
+            + risk * rr
         )
 
         return {
-            "stop_loss": stop,
+            "sl": sl,
             "target": target,
-            "risk": risk,
+            "rr": rr
         }
-
-    # --------------------------------------------------------
-    # SELL
-    # --------------------------------------------------------
 
     if signal == "SELL":
 
+        sl = resistance
+
         if (
-            not pd.isna(resistance)
-            and
-            resistance > entry
+            not np.isfinite(sl)
+            or sl <= price
         ):
 
-            stop = resistance
+            sl = price * 1.01
 
-        else:
-
-            # fallback: 1% risk
-            stop = entry * 1.01
-
-        risk = stop - entry
-
-        if risk <= 0:
-
-            return {
-                "stop_loss": None,
-                "target": None,
-                "risk": None,
-            }
+        risk = sl - price
 
         target = (
-            entry -
-            risk * rr
+            price
+            - risk * rr
         )
 
         return {
-            "stop_loss": stop,
+            "sl": sl,
             "target": target,
-            "risk": risk,
+            "rr": rr
         }
 
     return {
-        "stop_loss": None,
-        "target": None,
-        "risk": None,
+        "sl": np.nan,
+        "target": np.nan,
+        "rr": rr
     }
 
 
@@ -1591,597 +1252,584 @@ class ScannerEngine:
 
     def __init__(
         self,
-        settings=None
+        settings: Optional[
+            Dict[str, Any]
+        ] = None
     ):
 
         self.settings = (
             DEFAULT_SETTINGS.copy()
-            if settings is None
-            else settings.copy()
         )
 
-        self.history = {}
-        self.results = {}
-        self.ticks = {}
+        if settings:
 
-        self.lock = threading.RLock()
+            self.update_settings(
+                settings
+            )
+
 
     # --------------------------------------------------------
-    # SETTINGS
+    # UPDATE SETTINGS
     # --------------------------------------------------------
 
     def update_settings(
         self,
-        updates
+        settings: Dict[str, Any]
     ):
 
-        if not isinstance(
-            updates,
-            dict
-        ):
-            return
+        for key, value in settings.items():
 
-        with self.lock:
+            if key not in self.settings:
+                continue
 
-            for key, value in updates.items():
+            if value is None:
+                continue
 
-                if key not in self.settings:
-                    continue
+            try:
 
-                current = self.settings[
-                    key
-                ]
-
-                try:
+                if key in [
+                    "wave_heikin_ashi",
+                    "tide_heikin_ashi"
+                ]:
 
                     if isinstance(
-                        current,
-                        int
-                    ):
-
-                        value = int(
-                            value
-                        )
-
-                    elif isinstance(
-                        current,
-                        float
-                    ):
-
-                        value = float(
-                            value
-                        )
-
-                    elif isinstance(
-                        current,
+                        value,
                         str
                     ):
 
-                        value = str(
-                            value
+                        value = (
+                            value.lower()
+                            in [
+                                "true",
+                                "1",
+                                "yes",
+                                "on"
+                            ]
                         )
 
-                except Exception:
-                    continue
+                    else:
 
-                self.settings[
-                    key
-                ] = value
+                        value = bool(value)
 
-    # --------------------------------------------------------
-    # CLEAR HISTORY
-    # --------------------------------------------------------
+                elif key in [
+                    "wave_timeframe",
+                    "tide_timeframe"
+                ]:
 
-    def clear_history(self):
+                    value = str(value)
 
-        with self.lock:
+                elif key in [
+                    "risk_reward"
+                ]:
 
-            self.history.clear()
-            self.results.clear()
+                    value = float(value)
 
-    # --------------------------------------------------------
-    # SET HISTORY
-    # --------------------------------------------------------
+                else:
 
-    def set_history(
-        self,
-        symbol,
-        timeframe,
-        candles
-    ):
-
-        df = calculate_indicators(
-            candles,
-            self.settings
-        )
-
-        if df.empty:
-            return False
-
-        with self.lock:
-
-            self.history[
-                (
-                    symbol,
-                    timeframe
-                )
-            ] = df
-
-        return True
-
-    # --------------------------------------------------------
-    # TICK
-    # --------------------------------------------------------
-
-    def update_tick(
-        self,
-        symbol,
-        data
-    ):
-
-        with self.lock:
-
-            self.ticks[
-                symbol
-            ] = {
-                **self.ticks.get(
-                    symbol,
-                    {}
-                ),
-                **data,
-            }
-
-            # Update latest close.
-            for (
-                key
-            ), df in list(
-                self.history.items()
-            ):
-
-                if key[0] != symbol:
-                    continue
-
-                if df.empty:
-                    continue
-
-                price = safe_float(
-                    data.get(
-                        "ltp"
+                    value = int(
+                        float(value)
                     )
-                )
 
-                if pd.isna(price):
-                    continue
+                self.settings[key] = value
 
-                self.history[
-                    key
-                ].iat[
-                    -1,
-                    self.history[
-                        key
-                    ].columns.get_loc(
-                        "close"
-                    )
-                ] = price
+            except Exception:
+
+                continue
+
 
     # --------------------------------------------------------
-    # GET HISTORY
+    # GET SETTINGS
     # --------------------------------------------------------
 
-    def get_history(
+    def get_settings(self):
+
+        return self.settings.copy()
+
+
+    # --------------------------------------------------------
+    # MAIN ANALYSIS
+    # --------------------------------------------------------
+
+    def analyze_symbol(
         self,
-        symbol,
-        timeframe
+        symbol: str,
+        entry_df: Optional[pd.DataFrame] = None,
+        wave_df: Optional[pd.DataFrame] = None,
+        tide_df: Optional[pd.DataFrame] = None,
+        **kwargs
     ):
 
-        return self.history.get(
-            (
+        # ----------------------------------------------------
+        # Compatibility:
+        # If old main.py sends only wave/tide data,
+        # use those datasets.
+        # ----------------------------------------------------
+
+        if wave_df is None:
+            wave_df = entry_df
+
+        if tide_df is None:
+            tide_df = wave_df
+
+
+        # ----------------------------------------------------
+        # MINIMUM DATA
+        # ----------------------------------------------------
+
+        if (
+            wave_df is None
+            or len(wave_df)
+            < self.settings["minimum_candles"]
+        ):
+
+            return self.wait_result(
                 symbol,
-                timeframe
-            )
-        )
-
-    # --------------------------------------------------------
-    # RECALCULATE ONE
-    # --------------------------------------------------------
-
-    def calculate_symbol(
-        self,
-        symbol
-    ):
-
-        entry_tf = self.settings[
-            "entry_timeframe"
-        ]
-
-        wave_tf = self.settings[
-            "wave_timeframe"
-        ]
-
-        tide_tf = self.settings[
-            "tide_timeframe"
-        ]
-
-        entry_df = self.get_history(
-            symbol,
-            entry_tf
-        )
-
-        wave_df = self.get_history(
-            symbol,
-            wave_tf
-        )
-
-        tide_df = self.get_history(
-            symbol,
-            tide_tf
-        )
-
-        if (
-            entry_df is None
-            or entry_df.empty
-        ):
-
-            return None
-
-        # Recalculate indicators if settings
-        # changed.
-        entry_df = calculate_indicators(
-            entry_df[
-                [
-                    "timestamp",
-                    "open",
-                    "high",
-                    "low",
-                    "close",
-                    "volume",
-                    "open_interest",
-                ]
-            ].to_dict(
-                "records"
-            ),
-            self.settings
-        )
-
-        if (
-            wave_df is not None
-            and not wave_df.empty
-        ):
-
-            wave_df = calculate_indicators(
-                wave_df[
-                    [
-                        "timestamp",
-                        "open",
-                        "high",
-                        "low",
-                        "close",
-                        "volume",
-                        "open_interest",
-                    ]
-                ].to_dict(
-                    "records"
-                ),
-                self.settings
+                "Not enough Wave candles"
             )
 
+
         if (
-            tide_df is not None
-            and not tide_df.empty
+            tide_df is None
+            or len(tide_df)
+            < self.settings["minimum_candles"]
         ):
 
-            tide_df = calculate_indicators(
-                tide_df[
-                    [
-                        "timestamp",
-                        "open",
-                        "high",
-                        "low",
-                        "close",
-                        "volume",
-                        "open_interest",
-                    ]
-                ].to_dict(
-                "records"
-                ),
-                self.settings
+            return self.wait_result(
+                symbol,
+                "Not enough Tide candles"
             )
 
-        wave_direction = timeframe_direction(
+
+        # ----------------------------------------------------
+        # ANALYZE WAVE
+        # ----------------------------------------------------
+
+        wave = analyze_wave(
             wave_df,
             self.settings
         )
 
-        tide_direction = timeframe_direction(
+
+        # ----------------------------------------------------
+        # ANALYZE TIDE
+        # ----------------------------------------------------
+
+        tide = analyze_tide(
             tide_df,
             self.settings
         )
 
-        scored = score_entry(
-            entry_df,
-            wave_direction,
-            tide_direction,
+
+        # ----------------------------------------------------
+        # FILTER
+        #
+        # Use Wave data for the 20/50 filter.
+        # ----------------------------------------------------
+
+        filter_data = analyze_filter(
+            wave_df,
             self.settings
         )
 
-        row = entry_df.iloc[-1]
 
-        entry_price = safe_float(
-            row.get("close")
+        # ----------------------------------------------------
+        # SCORE
+        # ----------------------------------------------------
+
+        buy_score, sell_score = (
+            calculate_score(
+                wave,
+                tide,
+                filter_data,
+                self.settings
+            )
+        )
+
+
+        # ----------------------------------------------------
+        # FINAL SIGNAL
+        # ----------------------------------------------------
+
+        signal = final_signal(
+            wave,
+            tide,
+            filter_data,
+            self.settings,
+            buy_score,
+            sell_score
+        )
+
+
+        # ----------------------------------------------------
+        # CURRENT PRICE
+        # ----------------------------------------------------
+
+        prepared_wave = prepare_dataframe(
+            wave_df,
+            self.settings
+        )
+
+        if prepared_wave.empty:
+
+            return self.wait_result(
+                symbol,
+                "Invalid Wave data"
+            )
+
+        last = prepared_wave.iloc[-1]
+
+        price = safe_float(
+            last["close"]
         )
 
         support = safe_float(
-            row.get("support")
+            last.get("support")
         )
 
         resistance = safe_float(
-            row.get("resistance")
+            last.get("resistance")
         )
 
-        rr = calculate_risk_reward(
-            entry_price,
-            scored["signal"],
+
+        # ----------------------------------------------------
+        # LEVELS
+        # ----------------------------------------------------
+
+        levels = calculate_levels(
+            price,
+            signal,
             support,
             resistance,
             self.settings
         )
 
-        tick = self.ticks.get(
-            symbol,
-            {}
-        )
 
-        ltp = safe_float(
-            tick.get(
-                "ltp"
-            ),
-            entry_price
-        )
-
-        volume = safe_float(
-            row.get(
-                "volume"
-            ),
-            0
-        )
-
-        oi = safe_float(
-            row.get(
-                "open_interest"
-            ),
-            0
-        )
+        # ----------------------------------------------------
+        # RESULT
+        # ----------------------------------------------------
 
         return {
+
             "symbol": symbol,
 
-            "ltp": None
-            if pd.isna(ltp)
-            else round(
-                float(ltp),
-                2
-            ),
+            "price": price,
+            "ltp": price,
 
-            "entry": None
-            if pd.isna(entry_price)
-            else round(
-                float(entry_price),
-                2
-            ),
+            "signal": signal,
 
-            "signal": scored[
-                "signal"
-            ],
-
-            "score": scored[
-                "score"
-            ],
-
-            "confirmation": scored[
-                "confirmation"
-            ],
-
-            "buy_confirmation": scored[
-                "buy_confirmation"
-            ],
-
-            "sell_confirmation": scored[
-                "sell_confirmation"
-            ],
-
-            "wave": wave_direction,
-
-            "tide": tide_direction,
-
-            "rsi": round(
-                safe_float(
-                    row.get(
-                        "rsi"
-                    ),
-                    50
-                ),
-                2
-            ),
-
-            "macd": round(
-                safe_float(
-                    row.get(
-                        "macd"
-                    ),
-                    0
-                ),
-                4
-            ),
-
-            "macd_signal": round(
-                safe_float(
-                    row.get(
-                        "macd_signal"
-                    ),
-                    0
-                ),
-                4
-            ),
-
-            "stoch_k": round(
-                safe_float(
-                    row.get(
-                        "stoch_k"
-                    ),
-                    50
-                ),
-                2
-            ),
-
-            "stoch_d": round(
-                safe_float(
-                    row.get(
-                        "stoch_d"
-                    ),
-                    50
-                ),
-                2
-            ),
-
-            "volume": volume,
-
-            "open_interest": oi,
-
-            "support": None
-            if pd.isna(support)
-            else round(
-                float(support),
-                2
-            ),
-
-            "resistance": None
-            if pd.isna(resistance)
-            else round(
-                float(resistance),
-                2
-            ),
-
-            "stop_loss": rr[
-                "stop_loss"
-            ],
-
-            "target": rr[
-                "target"
-            ],
-
-            "risk": rr[
-                "risk"
-            ],
-
-            "reasons": scored[
-                "reasons"
-            ],
-
-            "timestamp": str(
-                row.get(
-                    "timestamp"
+            "score": (
+                buy_score
+                if signal == "BUY"
+                else
+                100 - sell_score
+                if signal == "SELL"
+                else
+                max(
+                    buy_score,
+                    100 - sell_score
                 )
             ),
-        }
 
-    # --------------------------------------------------------
-    # RECALCULATE ALL
-    # --------------------------------------------------------
+            "buy_score": buy_score,
+            "sell_score": sell_score,
 
-    def recalculate_all(self):
+            "wave": wave["direction"],
+            "wave_signal": wave["direction"],
 
-        symbols = set()
+            "tide": tide["direction"],
+            "tide_signal": tide["direction"],
 
-        with self.lock:
+            "ema": filter_data["direction"],
+            "ema_signal": filter_data["direction"],
 
-            for (
-                symbol,
-                _timeframe
-            ) in self.history.keys():
+            "filter": filter_data["direction"],
 
-                symbols.add(
-                    symbol
-                )
+            "rsi": wave.get(
+                "rsi",
+                np.nan
+            ),
 
-        results = {}
+            "macd": wave.get(
+                "macd",
+                np.nan
+            ),
 
-        for symbol in symbols:
+            "macd_signal": wave.get(
+                "macd_signal",
+                np.nan
+            ),
 
-            try:
+            "macd_hist": wave.get(
+                "macd_hist",
+                np.nan
+            ),
 
-                result = self.calculate_symbol(
-                    symbol
-                )
+            "stoch_k": wave.get(
+                "stoch_k",
+                np.nan
+            ),
 
-                if result:
+            "stoch_d": wave.get(
+                "stoch_d",
+                np.nan
+            ),
 
-                    results[
-                        symbol
-                    ] = result
+            "volume": wave.get(
+                "volume",
+                np.nan
+            ),
 
-            except Exception as exc:
+            "volume_sma": wave.get(
+                "volume_sma",
+                np.nan
+            ),
 
-                print(
-                    f"Strategy error "
-                    f"{symbol}: "
-                    f"{exc}"
-                )
+            "support": support,
+            "resistance": resistance,
 
-        with self.lock:
+            "sl": levels["sl"],
+            "stop_loss": levels["sl"],
 
-            self.results = results
+            "target": levels["target"],
+            "take_profit": levels["target"],
 
-    # --------------------------------------------------------
-    # SNAPSHOT
-    # --------------------------------------------------------
+            "rr": levels["rr"],
 
-    def snapshot(self):
-
-        self.recalculate_all()
-
-        with self.lock:
-
-            values = list(
-                self.results.values()
-            )
-
-        # Signal priority first, score second.
-        priority = {
-            "BUY": 0,
-            "SELL": 1,
-            "WAIT": 2,
-        }
-
-        values.sort(
-            key=lambda x: (
-                priority.get(
-                    x.get(
-                        "signal",
-                        "WAIT"
-                    ),
-                    2
+            "wave_ema_fast":
+                wave.get(
+                    "ema_fast"
                 ),
-                -float(
-                    x.get(
-                        "score",
+
+            "wave_ema_medium":
+                wave.get(
+                    "ema_medium"
+                ),
+
+            "wave_ema_slow":
+                wave.get(
+                    "ema_slow"
+                ),
+
+            "tide_ema_fast":
+                tide.get(
+                    "ema_fast"
+                ),
+
+            "tide_ema_medium":
+                tide.get(
+                    "ema_medium"
+                ),
+
+            "tide_ema_slow":
+                tide.get(
+                    "ema_slow"
+                ),
+
+            "filter_ema_fast":
+                filter_data.get(
+                    "ema_fast"
+                ),
+
+            "filter_ema_slow":
+                filter_data.get(
+                    "ema_slow"
+                ),
+
+            "wave_heikin_ashi":
+                (
+                    "BULLISH"
+                    if wave.get(
+                        "ha_bullish"
+                    )
+                    else
+                    "BEARISH"
+                    if wave.get(
+                        "ha_bearish"
+                    )
+                    else
+                    "NEUTRAL"
+                ),
+
+            "tide_heikin_ashi":
+                (
+                    "BULLISH"
+                    if tide.get(
+                        "ha_bullish"
+                    )
+                    else
+                    "BEARISH"
+                    if tide.get(
+                        "ha_bearish"
+                    )
+                    else
+                    "NEUTRAL"
+                ),
+
+            "confirmation":
+                max(
+                    wave.get(
+                        "confirmation",
+                        0
+                    ),
+                    tide.get(
+                        "confirmation",
                         0
                     )
                 ),
-                x.get(
-                    "symbol",
-                    ""
+
+            "reason":
+                build_reason(
+                    signal,
+                    wave,
+                    tide,
+                    filter_data
                 )
-            )
+        }
+
+
+    # --------------------------------------------------------
+    # COMPATIBILITY ALIAS
+    # --------------------------------------------------------
+
+    def scan_symbol(
+        self,
+        symbol: str,
+        *args,
+        **kwargs
+    ):
+
+        return self.analyze_symbol(
+            symbol,
+            *args,
+            **kwargs
         )
 
-        return values
+
+    # --------------------------------------------------------
+    # COMPATIBILITY ALIAS
+    # --------------------------------------------------------
+
+    def analyze(
+        self,
+        symbol: str,
+        *args,
+        **kwargs
+    ):
+
+        return self.analyze_symbol(
+            symbol,
+            *args,
+            **kwargs
+        )
+
+
+    # --------------------------------------------------------
+    # WAIT RESULT
+    # --------------------------------------------------------
+
+    def wait_result(
+        self,
+        symbol: str,
+        reason: str = ""
+    ):
+
+        return {
+
+            "symbol": symbol,
+
+            "price": np.nan,
+            "ltp": np.nan,
+
+            "signal": "WAIT",
+
+            "score": 50,
+
+            "buy_score": 50,
+            "sell_score": 50,
+
+            "wave": "WAIT",
+            "wave_signal": "WAIT",
+
+            "tide": "WAIT",
+            "tide_signal": "WAIT",
+
+            "ema": "WAIT",
+            "ema_signal": "WAIT",
+
+            "filter": "WAIT",
+
+            "rsi": np.nan,
+
+            "macd": np.nan,
+            "macd_signal": np.nan,
+            "macd_hist": np.nan,
+
+            "stoch_k": np.nan,
+            "stoch_d": np.nan,
+
+            "volume": np.nan,
+            "volume_sma": np.nan,
+
+            "support": np.nan,
+            "resistance": np.nan,
+
+            "sl": np.nan,
+            "stop_loss": np.nan,
+
+            "target": np.nan,
+            "take_profit": np.nan,
+
+            "rr":
+                self.settings[
+                    "risk_reward"
+                ],
+
+            "confirmation": 0,
+
+            "reason": reason
+        }
 
 
 # ============================================================
-# EXPORTS
+# REASON
+# ============================================================
+
+def build_reason(
+    signal,
+    wave,
+    tide,
+    filter_data
+):
+
+    if signal == "BUY":
+
+        return (
+            "Wave bullish + Tide bullish + "
+            "20/50 filter bullish + "
+            "indicator confirmation"
+        )
+
+    if signal == "SELL":
+
+        return (
+            "Wave bearish + Tide bearish + "
+            "20/50 filter bearish + "
+            "indicator confirmation"
+        )
+
+    return (
+        "Wave/Tide/Filter confirmation "
+        "not aligned"
+    )
+
+
+# ============================================================
+# EXPORT
 # ============================================================
 
 __all__ = [
     "DEFAULT_SETTINGS",
     "ScannerEngine",
+    "prepare_dataframe",
+    "heikin_ashi",
 ]
